@@ -1237,7 +1237,7 @@ cm_lda_detailed <- as.data.frame(cm_lda$table) %>%
   group_by(Truth) %>%
   mutate(
     Total = sum(freq),
-    Percentage = round(sum / Total * 100, 1)
+    Percentage = round(freq / Total * 100, 1)
   ) %>%
   ungroup()
 
