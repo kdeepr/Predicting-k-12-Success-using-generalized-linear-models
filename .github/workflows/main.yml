@@ -30,7 +30,7 @@ jobs:
             "knitr", "kableExtra", "tidyverse", "tidymodels",
             "readxl", "ggplot2", "corrplot", "gridExtra",
             "viridis", "scales", "readr", "nnet", "MASS",
-            "pscl", "car", "conflicted", "rmarkdown"
+            "pscl", "car", "conflicted", "rmarkdown", "GGally"
           ))
         shell: Rscript {0}
 
