@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write 
+  contents: write
 
 jobs:
   build:
@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev libfontconfig1-dev libharfbuzz-dev libfribidi-dev libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev
-      
+
       - name: Install R packages
         run: |
           install.packages(c(
@@ -32,7 +32,7 @@ jobs:
             "viridis", "scales", "readr", "nnet", "MASS",
             "pscl", "car", "conflicted", "rmarkdown",
             "GGally", "ggmosaic", "patchwork", "broom",
-            "glmnet", "poissonreg", "vip", "probably", "discrim", "ggmosaic"
+            "glmnet", "poissonreg", "vip", "probably", "discrim"
           ))
         shell: Rscript {0}
 
