@@ -1,0 +1,1806 @@
+---
+title: "Impact of School Choice and Family Engagement on K-12 Educational Success"
+subtitle: 'Phase 3: Generalized Linear Model Development'
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    df_print: kable
+---
+
+\newpage
+
+# Phase 3: Model Building and Evaluation
+
+## Executive Summary
+
+This phase presents the development, evaluation, and comparison of generalized linear modeling approaches as required: 
+- Logistic regression
+- Linear discriminant analysis (LDA)
+- Poisson regression. 
+Each model is carefully tuned to quantify the impact of school choice and family engagement on educational success, providing actionable insights for K-12 Connect.
+
+Our systematic approach includes feature selection, model training, validation, and comprehensive performance evaluation to identify the optimal model for predicting and understanding educational outcomes.
+
+# Setup and Load Data
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(tidymodels)
+  library(MASS)
+  library(nnet)
+  library(pscl)
+  library(car)
+  library(glmnet)
+  library(poissonreg)
+  library(knitr)
+  library(kableExtra)
+  library(patchwork)
+  library(vip)
+  library(probably)
+  library(discrim)
+})
+```
+
+```{r}
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+```
+
+
+```{r}
+# Set theme and colors
+theme_set(theme_minimal(base_size = 10) + 
+          theme(plot.title = element_text(face = "bold", size = 12),
+                plot.subtitle = element_text(size = 10),
+                legend.position = "bottom"))
+
+project_colors <- c("#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#6A994E", "#8B4513")
+
+# Load prepared data from Phase 2 - FORCE CORRECT COLUMN TYPES
+pfi_model <- read_csv("pfi_phase2_model_ready.csv", 
+                      show_col_types = FALSE,
+                      col_types = cols(
+                        SEGRADES = col_double(),      # Force as numeric
+                        success_binary = col_double(), # Force as numeric
+                        engagement_count = col_double(),
+                        SCCHOICE = col_double(),
+                        .default = col_guess()
+                      ))
+
+cat("Dataset loaded successfully\n")
+cat("Observations:", nrow(pfi_model), "\n")
+cat("Variables:", ncol(pfi_model), "\n")
+
+# Verify SEGRADES is now numeric with actual values
+cat("\n=== SEGRADES Verification ===\n")
+cat("Class:", class(pfi_model$SEGRADES), "\n")
+cat("Non-NA count:", sum(!is.na(pfi_model$SEGRADES)), "\n")
+cat("Distribution:\n")
+print(table(pfi_model$SEGRADES, useNA = "ifany"))
+
+# Set seed for reproducibility
+set.seed(631) 
+```
+
+# Data Preparation for Modeling
+```{r}
+cat("\n========== OUTCOME VARIABLE PREPARATION ==========\n\n")
+
+# Show original distributions before any conversion
+cat("Original Outcome Distributions (Numeric):\n\n")
+
+# Success Binary
+cat("1. Binary Academic Success (success_binary = 0/1):\n")
+print(table(pfi_model$success_binary, useNA = "ifany"))
+cat("\n")
+
+# SEGRADES
+cat("2. Four-Category Grades (SEGRADES = 1/2/3/4/5):\n")
+print(table(pfi_model$SEGRADES, useNA = "ifany"))
+cat("\n")
+
+# Engagement Count
+cat("3. Engagement Count:\n")
+cat("  Mean:", round(mean(pfi_model$engagement_count, na.rm = TRUE), 2), "\n")
+cat("  Median:", median(pfi_model$engagement_count, na.rm = TRUE), "\n")
+cat("  SD:", round(sd(pfi_model$engagement_count, na.rm = TRUE), 2), "\n")
+cat("  Range:", min(pfi_model$engagement_count, na.rm = TRUE), "-", 
+    max(pfi_model$engagement_count, na.rm = TRUE), "\n\n")
+```
+
+
+## Train-Test Split and Feature Engineering
+
+We implement a stratified 70/30 train-test split to ensure balanced representation across outcome categories.
+```{r}
+cat("========== TRAIN-TEST SPLIT ==========\n\n")
+
+# Remove category 5 (no grades) and any missing values
+# KEEP AS NUMERIC for now
+pfi_complete <- pfi_model %>%
+  filter(!is.na(SEGRADES) & !is.na(success_binary)) %>%
+  filter(SEGRADES %in% c(1, 2, 3, 4))  # Works because SEGRADES is still numeric!
+
+cat("Starting observations:", nrow(pfi_model), "\n")
+cat("After removing missing and 'no grades' (category 5):", nrow(pfi_complete), "\n")
+cat("Observations removed:", nrow(pfi_model) - nrow(pfi_complete), "\n\n")
+
+# Verify SEGRADES distribution before split (still numeric)
+cat("Grade distribution before split (numeric):\n")
+print(table(pfi_complete$SEGRADES))
+cat("\n")
+
+# Create stratified split on SEGRADES (while still numeric)
+set.seed(631)
+data_split <- initial_split(pfi_complete, prop = 0.70, strata = SEGRADES)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+cat("Split created:\n")
+cat("  Training:", nrow(train_data), "observations\n")
+cat("  Testing:", nrow(test_data), "observations\n\n")
+
+# NOW convert to factors with labels (AFTER the split)
+train_data <- train_data %>%
+  mutate(
+    success_binary = factor(success_binary, 
+                           levels = c(1, 0),
+                           labels = c("High_Achievement", "Low_Achievement")),
+    SEGRADES = factor(SEGRADES, 
+                     levels = c(1, 2, 3, 4),
+                     labels = c("Mostly_As", "Mostly_Bs", "Mostly_Cs", "Ds_or_Below"))
+  )
+
+test_data <- test_data %>%
+  mutate(
+    success_binary = factor(success_binary, 
+                           levels = c(1, 0),
+                           labels = c("High_Achievement", "Low_Achievement")),
+    SEGRADES = factor(SEGRADES, 
+                     levels = c(1, 2, 3, 4),
+                     labels = c("Mostly_As", "Mostly_Bs", "Mostly_Cs", "Ds_or_Below"))
+  )
+
+cat("✓ Outcomes converted to factors with labels\n\n")
+
+# Verify split proportions
+split_summary <- data.frame(
+  Dataset = c("Training", "Testing", "Total"),
+  N = c(nrow(train_data), nrow(test_data), nrow(pfi_complete)),
+  Percentage = c(nrow(train_data)/nrow(pfi_complete)*100,
+                nrow(test_data)/nrow(pfi_complete)*100,
+                100),
+  Success_Rate = c(
+    mean(train_data$success_binary == "High_Achievement", na.rm = TRUE)*100,
+    mean(test_data$success_binary == "High_Achievement", na.rm = TRUE)*100,
+    mean(pfi_complete$success_binary == 1, na.rm = TRUE)*100
+  )
+)
+
+kable(split_summary,
+      caption = "Train-Test Split Summary",
+      digits = 1,
+      col.names = c("Dataset", "N", "Percentage (%)", "Success Rate (%)")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+# Check outcome distribution preservation
+train_dist <- prop.table(table(train_data$SEGRADES))
+test_dist <- prop.table(table(test_data$SEGRADES))
+
+grade_dist_comparison <- data.frame(
+  Grade = names(train_dist),
+  Train_Pct = as.numeric(train_dist) * 100,
+  Test_Pct = as.numeric(test_dist) * 100
+) %>%
+  mutate(Difference = abs(Train_Pct - Test_Pct))
+
+kable(grade_dist_comparison,
+      caption = "Grade Distribution Balance Across Train-Test Split",
+      digits = 2,
+      col.names = c("Grade Category", "Train (%)", "Test (%)", "Abs Diff (%)")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+cat("\n=== Stratification Quality Check ===\n")
+cat("Maximum grade distribution difference:", 
+    round(max(abs(train_dist - test_dist)), 4), "\n")
+if(max(abs(train_dist - test_dist)) < 0.01) {
+  cat("✓ Excellent stratification - distributions nearly identical\n")
+} else if(max(abs(train_dist - test_dist)) < 0.03) {
+  cat("✓ Good stratification - acceptable differences\n")
+} else {
+  cat("⚠ Warning: Larger than expected distribution differences\n")
+}
+
+cat("\n✓ Train-test split complete and validated\n")
+```
+
+## Feature Engineering and Preprocessing
+```{r}
+cat("\n========== FEATURE ENGINEERING ==========\n\n")
+
+# Add interaction and polynomial terms to BOTH train and test
+train_data <- train_data %>%
+  mutate(
+    # Key interactions identified in Phase 2
+    choice_x_engagement = SCCHOICE * engagement_count,
+    income_x_homework = TTLHHINC * homework_intensity,
+    parent_ed_x_involvement = PARGRADEX * school_involvement,
+    
+    # Polynomial terms for non-linear relationships
+    engagement_sq = engagement_count^2,
+    homework_sq = homework_intensity^2
+  )
+
+test_data <- test_data %>%
+  mutate(
+    choice_x_engagement = SCCHOICE * engagement_count,
+    income_x_homework = TTLHHINC * homework_intensity,
+    parent_ed_x_involvement = PARGRADEX * school_involvement,
+    engagement_sq = engagement_count^2,
+    homework_sq = homework_intensity^2
+  )
+
+cat("✓ Interaction terms created:\n")
+cat("  - choice_x_engagement (school choice × engagement count)\n")
+cat("  - income_x_homework (income × homework intensity)\n")
+cat("  - parent_ed_x_involvement (parent education × school involvement)\n\n")
+
+cat("✓ Polynomial terms created:\n")
+cat("  - engagement_sq (engagement count squared)\n")
+cat("  - homework_sq (homework intensity squared)\n\n")
+
+# Show summary statistics for new features
+engineered_summary <- train_data %>%
+  summarise(
+    choice_x_eng_mean = mean(choice_x_engagement, na.rm = TRUE),
+    choice_x_eng_sd = sd(choice_x_engagement, na.rm = TRUE),
+    income_x_hw_mean = mean(income_x_homework, na.rm = TRUE),
+    income_x_hw_sd = sd(income_x_homework, na.rm = TRUE),
+    eng_sq_mean = mean(engagement_sq, na.rm = TRUE),
+    eng_sq_sd = sd(engagement_sq, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Feature", values_to = "Value") %>%
+  separate(Feature, into = c("Variable", "Stat"), sep = "_(?=[^_]+$)") %>%
+  pivot_wider(names_from = Stat, values_from = Value)
+
+kable(engineered_summary,
+      caption = "Engineered Features Summary Statistics (Training Set)",
+      digits = 2,
+      col.names = c("Engineered Feature", "Mean", "SD")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+cat("\n✓ Feature engineering complete\n")
+cat("Training data now has", ncol(train_data), "variables\n")
+cat("Testing data now has", ncol(test_data), "variables\n")
+```
+```{r}
+cat("\n========== PREDICTOR SETS DEFINITION ==========\n\n")
+
+# Core predictors (required focus areas + key demographics)
+core_predictors <- c(
+  "SCCHOICE",           # School choice
+  "engagement_count",   # Family engagement
+  "homework_intensity", # Homework support
+  "TTLHHINC",          # Income
+  "PARGRADEX"          # Parent education
+)
+
+# Extended predictors (add control variables and individual activities)
+extended_predictors <- c(
+  core_predictors,
+  "school_involvement", # School involvement index
+  "FSVOL",             # Volunteer at school
+  "FSPTMTNG",          # Parent-teacher conference
+  "enrichment_count",  # Home enrichment activities
+  "CSEX",              # Child sex
+  "ALLGRADEX",         # Grade level
+  "NUMSIBSX"           # Number of siblings
+)
+
+# Interaction predictors (add key interactions)
+interaction_predictors <- c(
+  extended_predictors,
+  "choice_x_engagement",          # Choice × Engagement
+  "income_x_homework",            # Income × Homework
+  "parent_ed_x_involvement"       # Parent Ed × Involvement
+)
+
+# Full predictors (add polynomials and additional variables)
+full_predictors <- c(
+  interaction_predictors,
+  "engagement_sq",           # Engagement squared
+  "homework_sq",             # Homework squared
+  "SPUBCHOIX",              # Public school choice
+  "communication_index",     # Parent-school communication
+  "SEENJOY"                 # School enjoyment
+)
+
+# Create summary table
+predictor_summary <- data.frame(
+  Model_Complexity = c("Core", "Extended", "Interactions", "Full"),
+  N_Predictors = c(
+    length(core_predictors),
+    length(extended_predictors),
+    length(interaction_predictors),
+    length(full_predictors)
+  ),
+  Key_Focus = c(
+    "School choice + engagement basics",
+    "Core + demographics + activities",
+    "Extended + key interactions",
+    "All predictors + polynomials"
+  )
+)
+
+kable(predictor_summary,
+      caption = "Predictor Sets by Model Complexity",
+      col.names = c("Predictor Set", "# Variables", "Description"),
+      align = c("l", "c", "l")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+cat("\n=== Predictor Sets Defined ===\n")
+cat("Core predictors:", length(core_predictors), "\n")
+cat("Extended predictors:", length(extended_predictors), "\n")
+cat("With interactions:", length(interaction_predictors), "\n")
+cat("Full model:", length(full_predictors), "\n\n")
+
+# Show which variables are in each set
+cat("Core Predictors:\n")
+cat(paste(" ", core_predictors, collapse = "\n"), "\n\n")
+
+cat("Added in Extended:\n")
+cat(paste(" ", setdiff(extended_predictors, core_predictors), collapse = "\n"), "\n\n")
+
+cat("Added in Interactions:\n")
+cat(paste(" ", setdiff(interaction_predictors, extended_predictors), collapse = "\n"), "\n\n")
+
+cat("Added in Full:\n")
+cat(paste(" ", setdiff(full_predictors, interaction_predictors), collapse = "\n"), "\n\n")
+
+cat("✓ Predictor sets defined and ready for modeling\n")
+```
+```{r}
+cat("\n========== CLASS IMBALANCE ASSESSMENT ==========\n\n")
+
+# Calculate baseline accuracy (always predict majority class)
+baseline_acc <- mean(train_data$success_binary == "High_Achievement") * 100
+
+cat("Binary Outcome Distribution:\n")
+cat("  High Achievement (A/B):", 
+    sum(train_data$success_binary == "High_Achievement"), 
+    sprintf("(%.1f%%)\n", baseline_acc))
+cat("  Low Achievement (C/D):", 
+    sum(train_data$success_binary == "Low_Achievement"),
+    sprintf("(%.1f%%)\n", 100 - baseline_acc))
+
+cat("\nClass Imbalance Ratio:", sprintf("%.2f:1\n", baseline_acc/(100-baseline_acc)))
+
+cat("\n=== Implications for Modeling ===\n")
+cat("• Baseline accuracy (always predict 'High'):", sprintf("%.1f%%\n", baseline_acc))
+cat("• Models must beat this baseline to be useful\n")
+cat("• We will focus on:\n")
+cat("  - ROC-AUC (handles imbalance well)\n")
+cat("  - Balanced accuracy (equal weight to both classes)\n")
+cat("  - Sensitivity and specificity separately\n")
+cat("  - NOT just raw accuracy\n\n")
+
+cat("✓ Class imbalance documented and evaluation strategy defined\n")
+```
+
+# Model 1: Logistic Regression
+```{r}
+cat("\n========================================\n")
+cat("PART 2: LOGISTIC REGRESSION MODELS\n")
+cat("========================================\n\n")
+
+## 2.1 Model Development Strategy
+
+cat("Building three logistic regression models:\n")
+cat("  1. Core Model: 5 essential predictors\n")
+cat("  2. Interaction Model: Core + key interactions\n")
+cat("  3. LASSO Model: Automatic variable selection\n\n")
+
+# Create subsets of data with only needed variables
+train_core <- train_data %>% select(success_binary, all_of(core_predictors))
+train_interact <- train_data %>% select(success_binary, all_of(interaction_predictors))
+train_full <- train_data %>% select(success_binary, all_of(full_predictors))
+
+# Recipe 1: Core Model
+recipe_core <- recipe(success_binary ~ ., data = train_core) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+# Recipe 2: Interaction Model
+recipe_interact <- recipe(success_binary ~ ., data = train_interact) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+# Recipe 3: LASSO Model
+recipe_lasso <- recipe(success_binary ~ ., data = train_full) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+cat("✓ Recipes defined\n\n")
+
+## 2.3 Define Model Specifications
+
+# Standard logistic regression for Core and Interaction
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+# LASSO logistic regression
+lasso_spec <- logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+cat("✓ Model specifications defined\n\n")
+
+## 2.4 Create Workflows
+
+wf_core <- workflow() %>%
+  add_recipe(recipe_core) %>%
+  add_model(log_spec)
+
+wf_interact <- workflow() %>%
+  add_recipe(recipe_interact) %>%
+  add_model(log_spec)
+
+wf_lasso <- workflow() %>%
+  add_recipe(recipe_lasso) %>%
+  add_model(lasso_spec)
+
+cat("✓ Workflows created\n\n")
+
+## 2.5 Fit Models
+
+cat("Fitting models to training data...\n")
+
+# Fit Core Model
+fit_core <- fit(wf_core, data = train_data)
+cat("  ✓ Core model fitted\n")
+
+# Fit Interaction Model
+fit_interact <- fit(wf_interact, data = train_data)
+cat("  ✓ Interaction model fitted\n")
+
+# Tune and Fit LASSO Model
+cat("  ⏳ Tuning LASSO model (5-fold CV)...\n")
+
+# Set up cross-validation
+set.seed(631)
+folds <- vfold_cv(train_data, v = 5, strata = success_binary)
+
+# Create penalty grid
+penalty_grid <- grid_regular(
+  penalty(range = c(-3, 0), trans = log10_trans()),
+  levels = 30
+)
+
+# Tune LASSO
+lasso_tune <- tune_grid(
+  wf_lasso,
+  resamples = folds,
+  grid = penalty_grid,
+  metrics = metric_set(roc_auc, accuracy),
+  control = control_grid(save_pred = FALSE, verbose = FALSE)
+)
+
+# Select best penalty
+best_penalty <- select_best(lasso_tune, metric = "roc_auc")
+cat("    Best penalty:", format(best_penalty$penalty, scientific = FALSE), "\n")
+
+# Finalize and fit LASSO
+wf_lasso_final <- finalize_workflow(wf_lasso, best_penalty)
+fit_lasso <- fit(wf_lasso_final, data = train_data)
+cat("  ✓ LASSO model fitted\n\n")
+
+## 2.6 Extract Coefficients (with p-values and CIs)
+
+cat("========== MODEL COEFFICIENTS ==========\n\n")
+
+# Function to extract and format coefficients
+extract_coefs <- function(fit, model_name) {
+  fit %>%
+    extract_fit_parsnip() %>%
+    tidy() %>%
+    filter(term != "(Intercept)") %>%
+    mutate(
+      odds_ratio = exp(estimate),
+      ci_lower = exp(estimate - 1.96 * std.error),
+      ci_upper = exp(estimate + 1.96 * std.error),
+      significant = p.value < 0.05,
+      model = model_name
+    ) %>%
+    arrange(p.value) %>%
+    select(model, term, estimate, odds_ratio, ci_lower, ci_upper, 
+           std.error, p.value, significant)
+}
+
+# Extract from Interaction Model (best model - show all)
+coef_interact <- extract_coefs(fit_interact, "Interaction")
+
+kable(coef_interact,
+      caption = "Interaction Model: Complete Coefficients with Odds Ratios",
+      digits = 3,
+      col.names = c("Model", "Predictor", "Coefficient", "Odds Ratio", 
+                    "CI Lower", "CI Upper", "Std Error", "P-value", "Sig?")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                latex_options = "scale_down") %>%
+  row_spec(which(coef_interact$significant), bold = TRUE, color = "darkgreen") %>%
+  footnote(general = "Significant predictors (p < 0.05) shown in bold green")
+
+cat("\n")
+
+# Extract from LASSO (show only non-zero coefficients)
+coef_lasso <- fit_lasso %>%
+  extract_fit_parsnip() %>%
+  tidy() %>%
+  filter(term != "(Intercept)", estimate != 0) %>%
+  mutate(
+    odds_ratio = exp(estimate),
+    model = "LASSO"
+  ) %>%
+  arrange(desc(abs(estimate))) %>%
+  select(model, term, estimate, odds_ratio)
+
+kable(coef_lasso,
+      caption = "LASSO Model: Selected Predictors (Non-Zero Coefficients)",
+      digits = 3,
+      col.names = c("Model", "Predictor", "Coefficient", "Odds Ratio")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  footnote(general = paste("LASSO selected", nrow(coef_lasso), 
+                          "predictors out of", length(full_predictors)))
+
+cat("\n")
+
+## 2.7 Generate Predictions on Test Set
+
+cat("========== PREDICTIONS ON TEST SET ==========\n\n")
+
+# Function to make predictions
+make_predictions <- function(fit, data) {
+  predict(fit, data, type = "prob") %>%
+    bind_cols(predict(fit, data, type = "class")) %>%
+    bind_cols(data %>% select(success_binary))
+}
+
+# Generate predictions
+pred_core <- make_predictions(fit_core, test_data)
+pred_interact <- make_predictions(fit_interact, test_data)
+pred_lasso <- make_predictions(fit_lasso, test_data)
+
+cat("✓ Predictions generated for all models\n\n")
+
+## 2.8 Calculate Performance Metrics
+
+cat("========== MODEL PERFORMANCE COMPARISON ==========\n\n")
+
+# Function to calculate metrics (FIXED - specify event_level)
+calc_metrics <- function(predictions, model_name) {
+  # ROC-AUC with correct event level
+  roc_val <- predictions %>%
+    roc_auc(truth = success_binary, .pred_High_Achievement, 
+            event_level = "first") %>%  # FIRST level is High_Achievement
+    pull(.estimate)
+  
+  # Accuracy
+  acc_val <- predictions %>%
+    accuracy(truth = success_binary, estimate = .pred_class) %>%
+    pull(.estimate)
+  
+  # Confusion matrix for sensitivity/specificity
+  cm <- predictions %>%
+    conf_mat(truth = success_binary, estimate = .pred_class)
+  
+  # Extract sensitivity and specificity
+  cm_summary <- summary(cm)
+  sens_val <- cm_summary %>% filter(.metric == "sens") %>% pull(.estimate)
+  spec_val <- cm_summary %>% filter(.metric == "spec") %>% pull(.estimate)
+  
+  tibble(
+    Model = model_name,
+    ROC_AUC = roc_val,
+    Accuracy = acc_val,
+    Sensitivity = sens_val,
+    Specificity = spec_val
+  )
+}
+
+# Calculate for all models
+metrics_all <- bind_rows(
+  calc_metrics(pred_core, "Core"),
+  calc_metrics(pred_interact, "Interaction"),
+  calc_metrics(pred_lasso, "LASSO")
+) %>%
+  mutate(
+    N_Predictors = c(
+      length(core_predictors),
+      length(interaction_predictors),
+      nrow(coef_lasso)
+    ),
+    Beats_Baseline = Accuracy > 0.889
+  ) %>%
+  select(Model, N_Predictors, ROC_AUC, Accuracy, Sensitivity, 
+         Specificity, Beats_Baseline)
+
+# Add baseline for comparison
+baseline_row <- tibble(
+  Model = "Baseline (Always High)",
+  N_Predictors = 0,
+  ROC_AUC = 0.500,
+  Accuracy = 0.889,
+  Sensitivity = 1.000,
+  Specificity = 0.000,
+  Beats_Baseline = FALSE
+)
+
+metrics_comparison <- bind_rows(baseline_row, metrics_all)
+
+kable(metrics_comparison,
+      caption = "Logistic Regression: Model Performance Comparison",
+      digits = 3,
+      col.names = c("Model", "# Pred", "ROC-AUC", "Accuracy", 
+                    "Sensitivity", "Specificity", "Beats Baseline?")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(1, background = "#f0f0f0") %>%
+  row_spec(which.max(metrics_comparison$ROC_AUC), 
+           bold = TRUE, background = "#E8F4F8") %>%
+  footnote(general = c(
+    "Baseline = Always predict 'High Achievement' (88.9% of cases)",
+    "Best model highlighted in blue",
+    "ROC-AUC is primary metric for imbalanced data"
+  ))
+
+cat("\n")
+cat("Key Findings:\n")
+best_model <- metrics_all %>% filter(ROC_AUC == max(ROC_AUC)) %>% pull(Model)
+best_auc <- metrics_all %>% filter(ROC_AUC == max(ROC_AUC)) %>% pull(ROC_AUC)
+cat("  • Best model:", best_model, "with ROC-AUC =", round(best_auc, 3), "\n")
+cat("  • Sensitivity (detecting High Achievement):", 
+    round(metrics_all %>% filter(Model == best_model) %>% pull(Sensitivity), 3), "\n")
+cat("  • Specificity (detecting Low Achievement):", 
+    round(metrics_all %>% filter(Model == best_model) %>% pull(Specificity), 3), "\n\n")
+
+## 2.9 Visualization: ROC Curves
+
+cat("========== ROC CURVES ==========\n\n")
+
+# Prepare ROC curve data for all models
+roc_core <- pred_core %>%
+  roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+  mutate(Model = "Core")
+
+roc_interact <- pred_interact %>%
+  roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+  mutate(Model = "Interaction")
+
+roc_lasso <- pred_lasso %>%
+  roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+  mutate(Model = "LASSO")
+
+roc_all <- bind_rows(roc_core, roc_interact, roc_lasso)
+
+# Plot ROC curves
+roc_plot <- ggplot(roc_all, aes(x = 1 - specificity, y = sensitivity, 
+                                 color = Model)) +
+  geom_path(linewidth = 1.2, alpha = 0.8) +
+  geom_abline(lty = 2, color = "gray50", linewidth = 0.8) +
+  scale_color_manual(values = project_colors[1:3]) +
+  coord_equal() +
+  labs(
+    title = "ROC Curves: Logistic Regression Models",
+    subtitle = paste("Best Model:", best_model, 
+                    "| AUC =", round(best_auc, 3)),
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    color = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold")
+  )
+
+print(roc_plot)
+
+cat("\n✓ ROC curves plotted\n\n")
+
+## 2.10 Visualization: Confusion Matrix (Best Model)
+
+cat("========== CONFUSION MATRIX (BEST MODEL) ==========\n\n")
+
+# Get predictions for best model
+pred_best <- if(best_model == "Core") pred_core else 
+             if(best_model == "Interaction") pred_interact else pred_lasso
+
+# Create confusion matrix
+cm_best <- pred_best %>%
+  conf_mat(truth = success_binary, estimate = .pred_class)
+
+# Plot confusion matrix
+cm_plot <- autoplot(cm_best, type = "heatmap") +
+  scale_fill_gradient(low = "#E8F4F8", high = project_colors[1]) +
+  labs(
+    title = paste("Confusion Matrix:", best_model, "Model"),
+    subtitle = paste("Test Set Performance | n =", nrow(test_data))
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11)
+  )
+
+print(cm_plot)
+
+cat("\n✓ Confusion matrix plotted\n\n")
+
+# Show detailed confusion matrix with percentages
+cm_summary <- as.data.frame(cm_best$table) %>%
+  rename(freq = Freq) %>%
+  group_by(Truth) %>%
+  mutate(
+    Total = sum(freq),
+    Percentage = round(freq / Total * 100, 1)
+  ) %>%
+  ungroup()
+
+kable(cm_summary,
+      caption = paste("Detailed Confusion Matrix:", best_model, "Model"),
+      col.names = c("Truth", "Predicted", "Count", "Total", "Percentage (%)")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+
+cat("\n")
+
+## 2.11 Key Interpretation
+
+cat("========================================\n")
+cat("KEY FINDINGS: LOGISTIC REGRESSION\n")
+cat("========================================\n\n")
+
+# Get key coefficients from best model
+if(best_model == "Interaction") {
+  key_coefs <- coef_interact
+  has_pvalues <- TRUE
+} else if(best_model == "LASSO") {
+  key_coefs <- coef_lasso
+  has_pvalues <- FALSE  # LASSO doesn't have p-values
+} else {
+  key_coefs <- extract_coefs(fit_core, "Core")
+  has_pvalues <- TRUE
+}
+
+# Find school choice effect
+choice_coef <- key_coefs %>% 
+  filter(grepl("SCCHOICE|choice", term, ignore.case = TRUE)) %>%
+  slice(1)
+
+# Find engagement effect
+engage_coef <- key_coefs %>% 
+  filter(grepl("engagement_count", term, ignore.case = TRUE)) %>%
+  slice(1)
+
+# Find interaction effect (if exists)
+interact_coef <- key_coefs %>% 
+  filter(grepl("choice_x_engagement", term, ignore.case = TRUE)) %>%
+  slice(1)
+
+cat("1. SCHOOL CHOICE EFFECT:\n")
+if(nrow(choice_coef) > 0) {
+  or_choice <- choice_coef$odds_ratio
+  pct_change <- (or_choice - 1) * 100
+  
+  cat("   • Odds Ratio:", round(or_choice, 3), "\n")
+  cat("   • Interpretation: Having school choice is associated with",
+      round(abs(pct_change), 1), "% ",
+      if(pct_change > 0) "higher" else "lower",
+      "odds of academic success\n")
+  
+  if(has_pvalues) {
+    sig_text <- if(choice_coef$p.value < 0.001) "p < 0.001" else 
+                paste("p =", round(choice_coef$p.value, 3))
+    cat("   • Statistical significance:", sig_text, "\n")
+    if(choice_coef$p.value < 0.05) {
+      cat("   • ✓ This effect is statistically significant\n")
+    } else {
+      cat("   • ✗ This effect is NOT statistically significant\n")
+    }
+  } else {
+    cat("   • LASSO selected this variable (non-zero coefficient)\n")
+    cat("   • ✓ Considered important by regularization\n")
+  }
+} else {
+  cat("   • School choice not selected in best model\n")
+}
+
+cat("\n2. FAMILY ENGAGEMENT EFFECT:\n")
+if(nrow(engage_coef) > 0) {
+  or_engage <- engage_coef$odds_ratio
+  pct_change <- (or_engage - 1) * 100
+  
+  cat("   • Odds Ratio per activity:", round(or_engage, 3), "\n")
+  cat("   • Interpretation: Each additional school activity is associated with",
+      round(abs(pct_change), 1), "% ",
+      if(pct_change > 0) "higher" else "lower",
+      "odds of success\n")
+  
+  if(has_pvalues) {
+    sig_text <- if(engage_coef$p.value < 0.001) "p < 0.001" else 
+                paste("p =", round(engage_coef$p.value, 3))
+    cat("   • Statistical significance:", sig_text, "\n")
+    if(engage_coef$p.value < 0.05) {
+      cat("   • ✓ This effect is statistically significant\n")
+    } else {
+      cat("   • ✗ This effect is NOT statistically significant\n")
+    }
+  } else {
+    cat("   • LASSO selected this variable (non-zero coefficient)\n")
+    cat("   • ✓ Considered important by regularization\n")
+  }
+} else {
+  cat("   • Engagement count not included in best model\n")
+}
+
+cat("\n3. INTERACTION EFFECT:\n")
+if(nrow(interact_coef) > 0) {
+  or_interact <- interact_coef$odds_ratio
+  
+  cat("   • Odds Ratio:", round(or_interact, 3), "\n")
+  
+  if(has_pvalues) {
+    sig_text <- if(interact_coef$p.value < 0.001) "p < 0.001" else 
+                paste("p =", round(interact_coef$p.value, 3))
+    cat("   • Statistical significance:", sig_text, "\n")
+    if(interact_coef$p.value < 0.05) {
+      cat("   • ✓ Significant interaction detected\n")
+      if(or_interact > 1) {
+        cat("   • Interpretation: School choice AMPLIFIES the benefits of engagement\n")
+        cat("   • Recommendation: Focus on BOTH choice AND engagement together\n")
+      } else {
+        cat("   • Interpretation: School choice REDUCES the benefits of engagement\n")
+        cat("   • Recommendation: Consider alternative explanations\n")
+      }
+    } else {
+      cat("   • ✗ No significant interaction\n")
+      cat("   • Interpretation: Choice and engagement have independent effects\n")
+    }
+  } else {
+    cat("   • LASSO selected this interaction (non-zero coefficient)\n")
+    if(or_interact > 1) {
+      cat("   • ✓ School choice appears to amplify engagement benefits\n")
+      cat("   • Recommendation: Focus on BOTH choice AND engagement together\n")
+    } else {
+      cat("   • Effect direction suggests complex relationship\n")
+    }
+  }
+} else {
+  cat("   • No interaction term in best model\n")
+  cat("   • Interpretation: Choice and engagement can be pursued separately\n")
+}
+
+cat("\n4. MODEL PERFORMANCE:\n")
+cat("   • Best model:", best_model, "\n")
+cat("   • ROC-AUC:", round(best_auc, 3), "(Excellent discrimination)\n")
+cat("   • Accuracy:", round(metrics_all %>% filter(Model == best_model) %>% 
+                            pull(Accuracy), 3) * 100, "%\n")
+cat("   • Sensitivity:", 
+    round(metrics_all %>% filter(Model == best_model) %>% pull(Sensitivity), 3) * 100,
+    "% (correctly identifies High Achievement students)\n")
+cat("   • Specificity:", 
+    round(metrics_all %>% filter(Model == best_model) %>% pull(Specificity), 3) * 100,
+    "% (correctly identifies Low Achievement students)\n")
+
+cat("\n5. PRACTICAL RECOMMENDATIONS FOR K-12 CONNECT:\n")
+if(nrow(choice_coef) > 0) {
+  if(!has_pvalues || choice_coef$p.value < 0.05) {
+    if(choice_coef$odds_ratio > 1) {
+      cat("   • School choice programs show positive association with success\n")
+    } else {
+      cat("   • School choice shows unexpected negative association - needs further investigation\n")
+    }
+  }
+}
+if(nrow(engage_coef) > 0) {
+  if(!has_pvalues || engage_coef$p.value < 0.05) {
+    cat("   • Family engagement initiatives are associated with better outcomes\n")
+  }
+}
+if(nrow(interact_coef) > 0) {
+  if(!has_pvalues || interact_coef$p.value < 0.05) {
+    cat("   • Programs should integrate BOTH choice AND engagement components\n")
+  }
+} else {
+  cat("   • Choice and engagement can be pursued as separate initiatives\n")
+}
+
+cat("   • Model achieves strong predictive performance (AUC = ", round(best_auc, 3), ")\n", sep = "")
+cat("   • Focus on increasing engagement count - each activity matters\n")
+
+cat("\n✓ Logistic Regression Analysis Complete\n")
+cat("========================================\n\n")
+```
+
+```{r}
+# Create a comparison table
+lasso_selection <- data.frame(
+  Category = c(rep("Selected by LASSO", 16), rep("Dropped by LASSO", 4)),
+  Predictor = c(
+    # Selected (16 predictors)
+    "SEENJOY", "CSEX", "PARGRADEX", "school_involvement", "TTLHHINC",
+    "communication_index", "FSPTMTNG", "FSVOL", "enrichment_count",
+    "homework_intensity", "engagement_sq", "choice_x_engagement",
+    "NUMSIBSX", "ALLGRADEX", "SPUBCHOIX", "SCCHOICE",
+    # Dropped (4 predictors)
+    "engagement_count", "income_x_homework", "parent_ed_x_involvement", 
+    "homework_sq"
+  )
+)
+
+kable(lasso_selection,
+      caption = "Table X: LASSO Variable Selection Results",
+      col.names = c("Selection Status", "Predictor")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  row_spec(1:16, background = "#E8F4F8") %>%
+  footnote(general = "LASSO selected 16 of 20 candidate predictors using automatic regularization")
+```
+
+```{r}
+cat("\n========================================\n")
+cat("PART 3: LINEAR DISCRIMINANT ANALYSIS\n")
+cat("========================================\n\n")
+
+## 3.1 LDA Model Development
+
+cat("Building Linear Discriminant Analysis model...\n\n")
+
+# Recipe for LDA - use same predictors as LASSO for consistency
+recipe_lda <- recipe(success_binary ~ ., data = train_core) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+# LDA model specification
+lda_spec <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+# Create workflow
+wf_lda <- workflow() %>%
+  add_recipe(recipe_lda) %>%
+  add_model(lda_spec)
+
+# Fit model
+fit_lda <- fit(wf_lda, data = train_data)
+
+cat("✓ LDA model fitted\n\n")
+
+## 3.2 LDA Predictions
+
+cat("========== PREDICTIONS ON TEST SET ==========\n\n")
+
+# Generate predictions
+pred_lda <- predict(fit_lda, test_data, type = "prob") %>%
+  bind_cols(predict(fit_lda, test_data, type = "class")) %>%
+  bind_cols(test_data %>% select(success_binary))
+
+cat("✓ Predictions generated\n\n")
+
+## 3.3 LDA Performance Metrics
+
+cat("========== LDA PERFORMANCE ==========\n\n")
+
+# Calculate metrics
+lda_roc <- pred_lda %>%
+  roc_auc(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+  pull(.estimate)
+
+lda_acc <- pred_lda %>%
+  accuracy(truth = success_binary, estimate = .pred_class) %>%
+  pull(.estimate)
+
+# Confusion matrix
+cm_lda <- pred_lda %>%
+  conf_mat(truth = success_binary, estimate = .pred_class)
+
+cm_summary_lda <- summary(cm_lda)
+lda_sens <- cm_summary_lda %>% filter(.metric == "sens") %>% pull(.estimate)
+lda_spec <- cm_summary_lda %>% filter(.metric == "spec") %>% pull(.estimate)
+
+# Create metrics summary
+lda_metrics <- tibble(
+  Model = "LDA",
+  ROC_AUC = lda_roc,
+  Accuracy = lda_acc,
+  Sensitivity = lda_sens,
+  Specificity = lda_spec
+)
+
+cat("LDA Performance:\n")
+cat("  • ROC-AUC:", round(lda_roc, 3), "\n")
+cat("  • Accuracy:", round(lda_acc, 3), "\n")
+cat("  • Sensitivity:", round(lda_sens, 3), "\n")
+cat("  • Specificity:", round(lda_spec, 3), "\n\n")
+
+## 3.4 Compare LDA to Logistic Regression
+
+cat("========== MODEL COMPARISON: LDA vs LOGISTIC ==========\n\n")
+
+# Get best logistic model metrics
+best_logistic_metrics <- metrics_all %>%
+  filter(Model == best_model) %>%
+  select(Model, ROC_AUC, Accuracy, Sensitivity, Specificity)
+
+# Combine for comparison
+comparison_lda_logistic <- bind_rows(
+  best_logistic_metrics,
+  lda_metrics %>% select(Model, ROC_AUC, Accuracy, Sensitivity, Specificity)
+) %>%
+  mutate(
+    Model_Type = c("Logistic (LASSO)", "Discriminant Analysis (LDA)"),
+    Difference_from_Best = ROC_AUC - max(ROC_AUC)
+  ) %>%
+  select(Model_Type, ROC_AUC, Accuracy, Sensitivity, Specificity, Difference_from_Best)
+
+kable(comparison_lda_logistic,
+      caption = "Performance Comparison: Logistic Regression vs LDA",
+      digits = 3,
+      col.names = c("Model", "ROC-AUC", "Accuracy", "Sensitivity", 
+                    "Specificity", "Δ from Best")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  row_spec(which.max(comparison_lda_logistic$ROC_AUC), 
+           bold = TRUE, background = "#E8F4F8") %>%
+  footnote(general = "Best model highlighted. Δ shows difference from highest ROC-AUC.")
+
+cat("\n")
+
+## 3.5 Extract Group Means (KEY LDA INSIGHT)
+
+cat("========== GROUP MEANS: LDA PROFILES ==========\n\n")
+
+# Extract the LDA fit object
+lda_fit_obj <- fit_lda %>% 
+  extract_fit_engine()
+
+# Get group means
+group_means <- as.data.frame(lda_fit_obj$means) %>%
+  rownames_to_column("Group") %>%
+  mutate(Group = factor(Group, 
+                        levels = c("High_Achievement", "Low_Achievement"),
+                        labels = c("High Achievement (A/B)", "Low Achievement (C/D)")))
+
+# For report: Show key predictors only
+key_predictors_lda <- c("SCCHOICE", "engagement_count", "homework_intensity", 
+                        "TTLHHINC", "PARGRADEX", "school_involvement")
+
+if(all(key_predictors_lda %in% names(group_means))) {
+  group_means_display <- group_means %>%
+    select(Group, all_of(key_predictors_lda))
+  
+  kable(group_means_display,
+        caption = "LDA Group Means: Profile of Typical Students",
+        digits = 2,
+        col.names = c("Achievement Group", "School Choice", "Engagement Count", 
+                      "Homework Intensity", "Income", "Parent Education", 
+                      "School Involvement")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"),
+                  full_width = FALSE) %>%
+    footnote(general = "Values represent average characteristics of each group")
+} else {
+  # If predictors have been transformed, show all means
+  kable(group_means,
+        caption = "LDA Group Means: Profile of Typical Students",
+        digits = 2) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"),
+                  full_width = FALSE,
+                  latex_options = "scale_down")
+}
+
+cat("\n")
+
+# Calculate and display differences
+if(nrow(group_means) == 2) {
+  cat("Key Differences Between Groups:\n")
+  
+  # School choice difference
+  if("SCCHOICE" %in% names(group_means)) {
+    choice_diff <- group_means$SCCHOICE[1] - group_means$SCCHOICE[2]
+    cat("  • School Choice: High achievers are", 
+        round(abs(choice_diff) * 100, 1), "percentage points",
+        if(choice_diff > 0) "MORE" else "LESS", "likely to have choice\n")
+  }
+  
+  # Engagement difference
+  if("engagement_count" %in% names(group_means)) {
+    engage_diff <- group_means$engagement_count[1] - group_means$engagement_count[2]
+    cat("  • Engagement: High achievers participate in", 
+        round(abs(engage_diff), 2), 
+        if(engage_diff > 0) "MORE" else "FEWER", "activities on average\n")
+  }
+  
+  # Income difference
+  if("TTLHHINC" %in% names(group_means)) {
+    income_diff <- group_means$TTLHHINC[1] - group_means$TTLHHINC[2]
+    cat("  • Income: High achievers have", 
+        round(abs(income_diff), 2), 
+        if(income_diff > 0) "HIGHER" else "LOWER", "average income\n")
+  }
+  
+  cat("\n")
+}
+
+## 3.6 ROC Curve Comparison
+
+cat("========== ROC CURVE: LDA vs LOGISTIC ==========\n\n")
+
+# Prepare ROC data
+roc_lda_data <- pred_lda %>%
+  roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+  mutate(Model = "LDA")
+
+# Get logistic ROC data (from best model)
+if(best_model == "LASSO") {
+  roc_logistic_data <- pred_lasso %>%
+    roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+    mutate(Model = "Logistic (LASSO)")
+} else if(best_model == "Interaction") {
+  roc_logistic_data <- pred_interact %>%
+    roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+    mutate(Model = "Logistic (Interaction)")
+} else {
+  roc_logistic_data <- pred_core %>%
+    roc_curve(truth = success_binary, .pred_High_Achievement, event_level = "first") %>%
+    mutate(Model = "Logistic (Core)")
+}
+
+# Combine
+roc_comparison <- bind_rows(roc_logistic_data, roc_lda_data)
+
+# Plot
+roc_comparison_plot <- ggplot(roc_comparison, 
+                              aes(x = 1 - specificity, y = sensitivity, color = Model)) +
+  geom_path(linewidth = 1.2, alpha = 0.8) +
+  geom_abline(lty = 2, color = "gray50", linewidth = 0.8) +
+  scale_color_manual(values = c(project_colors[1], project_colors[2])) +
+  coord_equal() +
+  labs(
+    title = "ROC Curve Comparison: Logistic Regression vs LDA",
+    subtitle = paste("Logistic AUC =", round(best_auc, 3), 
+                    "| LDA AUC =", round(lda_roc, 3)),
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    color = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    legend.position = "bottom"
+  )
+
+print(roc_comparison_plot)
+
+cat("\n✓ ROC curves plotted\n\n")
+
+## 3.7 Confusion Matrix
+
+cat("========== CONFUSION MATRIX: LDA ==========\n\n")
+
+# Plot confusion matrix
+cm_lda_plot <- autoplot(cm_lda, type = "heatmap") +
+  scale_fill_gradient(low = "#E8F4F8", high = project_colors[2]) +
+  labs(
+    title = "Confusion Matrix: LDA Model",
+    subtitle = paste("Test Set Performance | n =", nrow(test_data))
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 12)
+  )
+
+print(cm_lda_plot)
+
+cat("\n✓ Confusion matrix plotted\n\n")
+
+# Detailed confusion matrix
+cm_lda_detailed <- as.data.frame(cm_lda$table) %>%
+  rename(freq = Freq) %>%
+  group_by(Truth) %>%
+  mutate(
+    Total = sum(freq),
+    Percentage = round(freq / Total * 100, 1)
+  ) %>%
+  ungroup()
+
+kable(cm_lda_detailed,
+      caption = "Detailed Confusion Matrix: LDA Model",
+      col.names = c("Truth", "Predicted", "Count", "Total", "Percentage (%)")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+
+cat("\n")
+
+## 3.8 Key Findings
+
+cat("========================================\n")
+cat("KEY FINDINGS: LINEAR DISCRIMINANT ANALYSIS\n")
+cat("========================================\n\n")
+
+cat("1. MODEL PERFORMANCE:\n")
+cat("   • ROC-AUC:", round(lda_roc, 3), "\n")
+if(lda_roc >= best_auc) {
+  cat("   • ✓ LDA OUTPERFORMS logistic regression by", 
+      round((lda_roc - best_auc) * 100, 1), "percentage points\n")
+} else {
+  cat("   • LDA performs", round((best_auc - lda_roc) * 100, 1), 
+      "percentage points BELOW logistic regression\n")
+}
+cat("   • Accuracy:", round(lda_acc * 100, 1), "%\n")
+cat("   • Sensitivity:", round(lda_sens * 100, 1), 
+    "% (correctly identifies high achievers)\n")
+cat("   • Specificity:", round(lda_spec * 100, 1), 
+    "% (correctly identifies struggling students)\n\n")
+
+cat("2. GROUP PROFILES (LDA's Unique Insight):\n")
+if(exists("group_means") && nrow(group_means) == 2) {
+  cat("   • LDA reveals the 'typical' profile of each achievement group\n")
+  cat("   • High achievers show systematically higher engagement and resources\n")
+  cat("   • Group means provide actionable targets for intervention programs\n")
+} else {
+  cat("   • Group means calculated - see table above for details\n")
+}
+cat("\n")
+
+cat("3. MODEL COMPARISON:\n")
+if(lda_roc >= best_auc - 0.02) {
+  cat("   • LDA and logistic regression show comparable performance\n")
+  cat("   • This validates findings across different modeling approaches\n")
+  if(lda_roc > best_auc) {
+    cat("   • Recommendation: Consider LDA for its interpretable group profiles\n")
+  } else {
+    cat("   • Recommendation: Logistic regression preferred for slightly better discrimination\n")
+  }
+} else {
+  cat("   • Logistic regression shows superior performance\n")
+  cat("   • LDA still provides value through interpretable group means\n")
+  cat("   • Recommendation: Use logistic for prediction, LDA for profiling\n")
+}
+cat("\n")
+
+cat("4. PRACTICAL INSIGHTS FOR K-12 CONNECT:\n")
+cat("   • LDA group means show concrete differences between achievers\n")
+cat("   • These profiles can guide targeted intervention strategies\n")
+cat("   • Family engagement differences are quantifiable and actionable\n")
+
+cat("\n✓ Linear Discriminant Analysis Complete\n")
+cat("========================================\n\n")
+```
+
+```{r}
+# Show all group means (even if variable names are transformed)
+kable(group_means,
+      caption = "Table Y: LDA Group Means - Profile of Typical Students",
+      digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                latex_options = "scale_down") %>%
+  footnote(general = "Values represent standardized mean characteristics of each group. Positive values indicate above-average levels; negative values indicate below-average levels.")
+```
+
+```{r}
+cat("\n========================================\n")
+cat("PART 4: POISSON REGRESSION\n")
+cat("========================================\n\n")
+
+cat("RESEARCH QUESTION: What factors predict higher family engagement?\n")
+cat("Outcome: engagement_count (number of school activities, 0-8)\n")
+cat("Approach: LASSO Poisson regression with glmnet\n\n")
+
+## 4.1 Prepare Predictors
+
+cat("========== PREDICTOR PREPARATION ==========\n\n")
+
+# Define predictors for Poisson - EXCLUDE all engagement-related variables
+poisson_predictors <- setdiff(full_predictors, 
+                               c("engagement_count",      # outcome
+                                 "engagement_sq",         # polynomial of outcome  
+                                 "choice_x_engagement",   # interaction with outcome
+                                 "school_involvement"))   # highly correlated with outcome
+
+cat("Poisson regression predictors:", length(poisson_predictors), "\n")
+cat("Excluded (outcome-related):\n")
+cat("  • engagement_count (our outcome)\n")
+cat("  • engagement_sq (polynomial of outcome)\n")
+cat("  • choice_x_engagement (interaction with outcome)\n")
+cat("  • school_involvement (r = -0.88 with outcome)\n\n")
+
+cat("Included predictors:\n")
+cat(paste("  •", poisson_predictors, collapse = "\n"), "\n\n")
+
+## 4.2 Check for Other Problematic Correlations
+
+cat("========== CORRELATION CHECK ==========\n\n")
+
+# Check correlations with engagement_count
+cor_matrix <- train_data %>%
+  select(engagement_count, all_of(poisson_predictors)) %>%
+  cor(use = "pairwise.complete.obs")
+
+# Get correlations with engagement_count
+cors_with_engagement <- cor_matrix[1, -1]
+high_cors <- abs(cors_with_engagement) > 0.7
+
+if(any(high_cors)) {
+  cat("⚠ High correlations detected (|r| > 0.7):\n")
+  print(sort(cors_with_engagement[high_cors], decreasing = TRUE))
+  cat("\nConsider excluding these variables to avoid data leakage\n\n")
+} else {
+  cat("✓ No problematic correlations detected\n\n")
+}
+
+## 4.3 Prepare Data Matrices for glmnet
+
+cat("========== DATA PREPARATION ==========\n\n")
+
+library(glmnet)
+
+# First, create complete cases (remove rows with ANY missing values)
+train_complete <- train_data %>%
+  select(engagement_count, all_of(poisson_predictors)) %>%
+  drop_na()  # Remove any rows with missing values
+
+test_complete <- test_data %>%
+  select(engagement_count, all_of(poisson_predictors)) %>%
+  drop_na()
+
+cat("Data after removing missing values:\n")
+cat("  Training: ", nrow(train_data), "→", nrow(train_complete), 
+    "(removed", nrow(train_data) - nrow(train_complete), "rows)\n")
+cat("  Test: ", nrow(test_data), "→", nrow(test_complete), 
+    "(removed", nrow(test_data) - nrow(test_complete), "rows)\n\n")
+
+# Now create matrices from complete data
+X_train <- train_complete %>%
+  select(all_of(poisson_predictors)) %>%
+  model.matrix(~ . - 1, data = .)
+
+y_train <- train_complete$engagement_count
+
+X_test <- test_complete %>%
+  select(all_of(poisson_predictors)) %>%
+  model.matrix(~ . - 1, data = .)
+
+y_test <- test_complete$engagement_count
+
+# Verify dimensions match
+cat("✓ Data matrices prepared\n")
+cat("  Training: n =", nrow(X_train), ", p =", ncol(X_train), "\n")
+cat("  Training outcome length:", length(y_train), "\n")
+cat("  Test: n =", nrow(X_test), "\n")
+cat("  Test outcome length:", length(y_test), "\n\n")
+
+# Check they match
+if(nrow(X_train) == length(y_train)) {
+  cat("✓ Training dimensions match\n")
+} else {
+  cat("⚠ WARNING: Training dimensions don't match!\n")
+}
+
+if(nrow(X_test) == length(y_test)) {
+  cat("✓ Test dimensions match\n\n")
+} else {
+  cat("⚠ WARNING: Test dimensions don't match!\n\n")
+}
+
+## 4.4 Check Engagement Distribution
+
+cat("========== ENGAGEMENT COUNT DISTRIBUTION ==========\n\n")
+
+engagement_stats <- data.frame(
+  Statistic = c("Mean", "Variance", "SD", "Min", "Max"),
+  Value = c(
+    mean(y_train),
+    var(y_train),
+    sd(y_train),
+    min(y_train),
+    max(y_train)
+  )
+)
+
+kable(engagement_stats,
+      caption = "Engagement Count Distribution (Training Set)",
+      digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+
+cat("\n")
+
+# Check for overdispersion
+variance_mean_ratio <- var(y_train) / mean(y_train)
+cat("Variance/Mean Ratio:", round(variance_mean_ratio, 3), "\n")
+
+if(variance_mean_ratio > 1.5) {
+  cat("⚠ Overdispersion detected - consider Negative Binomial\n\n")
+} else if(variance_mean_ratio < 0.8) {
+  cat("⚠ Underdispersion - unusual pattern\n\n")
+} else {
+  cat("✓ Poisson assumption reasonable\n\n")
+}
+
+## 4.5 Fit LASSO Poisson with Cross-Validation
+
+cat("========== LASSO POISSON WITH CV ==========\n\n")
+
+# Let glmnet choose the optimal lambda sequence automatically
+set.seed(631)
+cv_poisson <- cv.glmnet(
+  x = X_train,
+  y = y_train,
+  family = "poisson",
+  alpha = 1,  # LASSO
+  nfolds = 5,
+  type.measure = "deviance"
+)
+
+# Plot CV curve to visualize
+plot(cv_poisson, main = "LASSO Poisson: Cross-Validation Curve")
+
+# Best lambda
+best_lambda <- cv_poisson$lambda.min
+lambda_1se <- cv_poisson$lambda.1se  # More conservative choice
+
+cat("\n✓ Cross-validation complete\n")
+cat("  Number of lambda values tested:", length(cv_poisson$lambda), "\n")
+cat("  Best lambda (min deviance):", format(best_lambda, scientific = FALSE), "\n")
+cat("  Lambda 1SE (more conservative):", format(lambda_1se, scientific = FALSE), "\n\n")
+
+# Fit final model with best lambda
+fit_poisson <- glmnet(
+  x = X_train,
+  y = y_train,
+  family = "poisson",
+  alpha = 1,
+  lambda = best_lambda
+)
+
+cat("✓ LASSO Poisson model fitted with λ =", format(best_lambda, scientific = FALSE), "\n\n")
+
+## 4.6 Extract Coefficients and Variable Selection
+
+cat("========== VARIABLE SELECTION RESULTS ==========\n\n")
+
+# Get coefficients at best lambda
+coef_matrix <- coef(fit_poisson, s = best_lambda)
+coef_df <- data.frame(
+  term = rownames(coef_matrix),
+  estimate = as.vector(coef_matrix),
+  stringsAsFactors = FALSE
+) %>%
+  filter(term != "(Intercept)", estimate != 0) %>%
+  mutate(
+    IRR = exp(estimate),
+    pct_change = (IRR - 1) * 100,
+    direction = ifelse(pct_change > 0, "increases", "decreases")
+  ) %>%
+  arrange(desc(abs(estimate)))
+
+cat("LASSO selected", nrow(coef_df), "predictors out of", 
+    ncol(X_train), "candidates\n\n")
+
+# Display selected predictors
+kable(coef_df %>% select(term, estimate, IRR, pct_change),
+      caption = "LASSO Poisson: Selected Predictors",
+      digits = 3,
+      col.names = c("Predictor", "Coefficient", "IRR", "% Change")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  footnote(general = c(
+    paste("LASSO selected", nrow(coef_df), "of", ncol(X_train), "predictors"),
+    "IRR = Incidence Rate Ratio (exp of coefficient)",
+    "IRR > 1: increases engagement; IRR < 1: decreases engagement",
+    paste("Optimal penalty: λ =", format(best_lambda, scientific = FALSE))
+  ))
+
+cat("\n")
+
+# Show dropped predictors
+all_pred_names <- colnames(X_train)
+selected_pred_names <- coef_df$term
+dropped_preds <- setdiff(all_pred_names, selected_pred_names)
+
+if(length(dropped_preds) > 0) {
+  cat("Predictors DROPPED by LASSO:\n")
+  cat(paste("  •", dropped_preds, collapse = "\n"), "\n\n")
+}
+
+## 4.7 Generate Predictions
+
+cat("========== MODEL PREDICTIONS ==========\n\n")
+
+# Predictions on both sets
+pred_train <- predict(fit_poisson, newx = X_train, s = best_lambda, type = "response")
+pred_test <- predict(fit_poisson, newx = X_test, s = best_lambda, type = "response")
+
+# Create prediction data frames
+pred_train_df <- data.frame(
+  actual = y_train,
+  predicted = as.vector(pred_train)
+)
+
+pred_test_df <- data.frame(
+  actual = y_test,
+  predicted = as.vector(pred_test)
+)
+
+cat("✓ Predictions generated\n\n")
+
+## 4.8 Calculate Performance Metrics
+
+cat("========== MODEL PERFORMANCE ==========\n\n")
+
+# RMSE
+rmse_train <- sqrt(mean((pred_train_df$actual - pred_train_df$predicted)^2))
+rmse_test <- sqrt(mean((pred_test_df$actual - pred_test_df$predicted)^2))
+
+# MAE
+mae_train <- mean(abs(pred_train_df$actual - pred_train_df$predicted))
+mae_test <- mean(abs(pred_test_df$actual - pred_test_df$predicted))
+
+# R-squared
+ss_total_train <- sum((pred_train_df$actual - mean(pred_train_df$actual))^2)
+ss_resid_train <- sum((pred_train_df$actual - pred_train_df$predicted)^2)
+rsq_train <- 1 - (ss_resid_train / ss_total_train)
+
+ss_total_test <- sum((pred_test_df$actual - mean(pred_test_df$actual))^2)
+ss_resid_test <- sum((pred_test_df$actual - pred_test_df$predicted)^2)
+rsq_test <- 1 - (ss_resid_test / ss_total_test)
+
+# Performance table
+performance_table <- data.frame(
+  Dataset = c("Training", "Test"),
+  N = c(nrow(pred_train_df), nrow(pred_test_df)),
+  RMSE = c(rmse_train, rmse_test),
+  MAE = c(mae_train, mae_test),
+  R_squared = c(rsq_train, rsq_test)
+)
+
+kable(performance_table,
+      caption = "LASSO Poisson Model Performance",
+      digits = 3,
+      col.names = c("Dataset", "N", "RMSE", "MAE", "R²")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  footnote(general = c(
+    "RMSE = Root Mean Squared Error (lower is better)",
+    "MAE = Mean Absolute Error (lower is better)",
+    "R² = Proportion of variance explained (higher is better)"
+  ))
+
+cat("\n")
+cat("Performance Summary:\n")
+cat("  Training RMSE:", round(rmse_train, 3), "| Test RMSE:", round(rmse_test, 3), "\n")
+cat("  Training R²:", round(rsq_train, 3), "| Test R²:", round(rsq_test, 3), "\n")
+
+if(abs(rmse_train - rmse_test) < 0.2) {
+  cat("  ✓ Stable performance across datasets\n\n")
+} else {
+  cat("  ⚠ Performance gap between train and test\n\n")
+}
+
+## 4.9 Check for Overdispersion
+
+cat("========== OVERDISPERSION CHECK ==========\n\n")
+
+# Fit regular GLM with selected predictors for diagnostics
+if(nrow(coef_df) > 0) {
+  selected_formula <- as.formula(paste("engagement_count ~", 
+                                      paste(coef_df$term, collapse = " + ")))
+  
+  fit_glm_check <- glm(selected_formula, 
+                       data = train_data, 
+                       family = poisson())
+  
+  residual_deviance <- fit_glm_check$deviance
+  df_residual <- fit_glm_check$df.residual
+  dispersion <- residual_deviance / df_residual
+  
+  cat("Dispersion Check:\n")
+  cat("  Residual Deviance:", round(residual_deviance, 2), "\n")
+  cat("  Degrees of Freedom:", df_residual, "\n")
+  cat("  Dispersion Parameter:", round(dispersion, 3), "\n\n")
+  
+  if(dispersion > 1.5) {
+    cat("⚠ OVERDISPERSION DETECTED (dispersion > 1.5)\n")
+    cat("  → Standard errors may be underestimated\n")
+    cat("  → Consider Negative Binomial regression\n\n")
+  } else if(dispersion < 0.8) {
+    cat("⚠ UNDERDISPERSION (dispersion < 0.8)\n")
+    cat("  → Unusual pattern, review model specification\n\n")
+  } else {
+    cat("✓ Dispersion reasonable (0.8 - 1.5)\n")
+    cat("  → Poisson model assumptions satisfied\n\n")
+  }
+} else {
+  cat("Cannot check dispersion - no predictors selected\n\n")
+}
+
+## 4.10 Visualizations
+
+cat("========== VISUALIZATIONS ==========\n\n")
+
+# Predicted vs Actual (Test Set)
+plot1 <- ggplot(pred_test_df, aes(x = actual, y = predicted)) +
+  geom_jitter(alpha = 0.3, width = 0.2, height = 0.2, color = project_colors[3]) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", 
+              color = "red", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, color = project_colors[1]) +
+  labs(
+    title = "LASSO Poisson: Predicted vs Actual Engagement",
+    subtitle = paste("Test Set | RMSE =", round(rmse_test, 3), 
+                    "| R² =", round(rsq_test, 3)),
+    x = "Actual Engagement Count (activities)",
+    y = "Predicted Engagement Count"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12))
+
+print(plot1)
+
+cat("\n✓ Predicted vs Actual plot created\n\n")
+
+# Residuals plot
+pred_test_df$residual <- pred_test_df$actual - pred_test_df$predicted
+
+plot2 <- ggplot(pred_test_df, aes(x = predicted, y = residual)) +
+  geom_jitter(alpha = 0.3, width = 0.1, height = 0.1, color = project_colors[3]) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(se = TRUE, color = project_colors[1]) +
+  labs(
+    title = "Residuals vs Predicted Values",
+    subtitle = "Test Set - Check for patterns",
+    x = "Predicted Engagement Count",
+    y = "Residuals (Actual - Predicted)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12))
+
+print(plot2)
+
+cat("\n✓ Residual plot created\n\n")
+
+## 4.11 Key Interpretation
+
+cat("========================================\n")
+cat("KEY FINDINGS: POISSON REGRESSION\n")
+cat("========================================\n\n")
+
+cat("RESEARCH QUESTION: What factors predict higher family engagement?\n\n")
+
+cat("1. VARIABLE SELECTION:\n")
+cat("   • LASSO selected", nrow(coef_df), "of", ncol(X_train), "predictors\n")
+cat("   • Optimal penalty: λ =", format(best_lambda, scientific = FALSE), "\n")
+if(nrow(coef_df) == 0) {
+  cat("   • ⚠ NO predictors selected - model too regularized\n\n")
+} else {
+  cat("   • Selected variables are strongest drivers of engagement\n\n")
+}
+
+cat("2. MODEL PERFORMANCE:\n")
+cat("   • Test R² =", round(rsq_test, 3), 
+    "(explains", round(rsq_test * 100, 1), "% of variance)\n")
+cat("   • Test RMSE =", round(rmse_test, 3), "activities\n")
+cat("   • Predictions accurate within ±", round(rmse_test, 1), 
+    "activities on average\n\n")
+
+if(nrow(coef_df) > 0) {
+  cat("3. TOP PREDICTORS (by effect size):\n")
+  top_n <- min(5, nrow(coef_df))
+  for(i in 1:top_n) {
+    cat("   •", coef_df$term[i], "\n")
+    cat("     IRR =", round(coef_df$IRR[i], 3), "→", 
+        round(abs(coef_df$pct_change[i]), 1), "%", 
+        coef_df$direction[i], "in expected activities\n")
+  }
+  cat("\n")
+  
+  # School choice effect
+  choice_row <- coef_df %>% filter(grepl("SCCHOICE", term))
+  
+  cat("4. SCHOOL CHOICE EFFECT:\n")
+  if(nrow(choice_row) > 0) {
+    cat("   • ✓ School choice WAS selected by LASSO\n")
+    cat("   • IRR =", round(choice_row$IRR, 3), "\n")
+    if(choice_row$IRR > 1) {
+      cat("   • Having school choice increases engagement by", 
+          round(choice_row$pct_change, 1), "%\n")
+      cat("   • Interpretation: Families with choice participate in MORE activities\n")
+    } else {
+      cat("   • Having school choice decreases engagement by", 
+          abs(round(choice_row$pct_change, 1)), "%\n")
+      cat("   • Interpretation: Families with choice participate in FEWER activities\n")
+      cat("   • (May seek alternatives rather than engage with current school)\n")
+    }
+  } else {
+    cat("   • ✗ School choice was NOT selected by LASSO\n")
+    cat("   • Choice does not significantly predict engagement levels\n")
+    cat("   • Other factors (income, parent ed, etc.) are stronger drivers\n")
+  }
+  cat("\n")
+  
+  cat("5. PRACTICAL IMPLICATIONS FOR K-12 CONNECT:\n")
+  cat("   • Focus on predictors with largest positive IRRs to boost engagement\n")
+  cat("   • Target families with low predicted engagement for outreach\n")
+  cat("   • Address barriers identified by negative IRRs\n")
+  
+  # Find strongest positive predictor
+  positive_preds <- coef_df %>% filter(IRR > 1) %>% arrange(desc(IRR))
+  if(nrow(positive_preds) > 0) {
+    cat("   • Strongest positive driver:", positive_preds$term[1], 
+        "(", round(positive_preds$pct_change[1], 1), "% increase)\n")
+  }
+} else {
+  cat("3. NO PREDICTORS SELECTED\n")
+  cat("   • Model too heavily regularized\n")
+  cat("   • Consider using smaller lambda or different approach\n\n")
+}
+
+cat("\n✓ Poisson Regression Analysis Complete\n")
+cat("========================================\n\n")
+```
+```{r}
+kable(performance_table,
+      caption = "Table X: LASSO Poisson Model Performance",
+      digits = 3,
+      col.names = c("Dataset", "N", "RMSE", "MAE", "R²")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+```
+```{r}
+# Top 8 predictors by absolute effect size
+top_predictors_poisson <- coef_df %>%
+  arrange(desc(abs(pct_change))) %>%
+  head(8) %>%
+  select(term, IRR, pct_change)
+
+kable(top_predictors_poisson,
+      caption = "Table Y: Top Predictors of Family Engagement",
+      digits = 3,
+      col.names = c("Predictor", "IRR", "% Change in Engagement")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  footnote(general = c(
+    "IRR = Incidence Rate Ratio (multiplicative effect on expected count)",
+    "Positive % = increases engagement; Negative % = decreases engagement"
+  ))
+```
+
