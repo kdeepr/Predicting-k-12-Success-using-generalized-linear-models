@@ -37,11 +37,6 @@ jobs:
           ))
         shell: Rscript {0}
 
-      - name: Install ggmosaic from GitHub
-        run: |
-          remotes::install_github("haleyjeppson/ggmosaic")
-        shell: Rscript {0}
-
       - name: Render Phase 1
         run: Rscript -e "rmarkdown::render('Phase1_Data_Preparation.Rmd', output_format='html_document')"
 
