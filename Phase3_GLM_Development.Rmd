@@ -769,7 +769,7 @@ cm_summary <- as.data.frame(cm_best$table) %>%
   group_by(Truth) %>%
   mutate(
     Total = sum(freq),
-    Percentage = round(count / Total * 100, 1)
+    Percentage = round(freq / Total * 100, 1)
   ) %>%
   ungroup()
 
