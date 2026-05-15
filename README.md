@@ -1,8 +1,16 @@
 # Predicting K-12 Academic Success Using Generalized Linear Models
+![R](https://img.shields.io/badge/R-4.3.1-276DC3?logo=r)
+![RMarkdown](https://img.shields.io/badge/R%20Markdown-Reporting-blue)
+![tidymodels](https://img.shields.io/badge/tidymodels-Modeling-FF6F61)
+![tidyverse](https://img.shields.io/badge/tidyverse-Wrangling-1A162D)
+![GLM](https://img.shields.io/badge/GLM-Logistic%20%7C%20Poisson%20%7C%20LDA-green)
+![LASSO](https://img.shields.io/badge/LASSO-Regularization-orange)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Auto%20Render-2088FF?logo=githubactions)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
----
 
-## 📌 Overview
+
+## Overview
 A comprehensive three-phase statistical analysis investigating how school 
 choice and family engagement impact K-12 student academic success. Using 
 data from the U.S. Department of Education's Parent and Family Involvement 
@@ -18,7 +26,7 @@ student academic success, and how do these factors interact?**
 
 ---
 
-## 📂 Dataset
+## Dataset
 | Dataset | Description |
 |---|---|
 | PFI Survey 2019 | Primary dataset — 15,500 students, 71 variables |
@@ -27,7 +35,7 @@ student academic success, and how do these factors interact?**
 
 ---
 
-## 🔍 Three-Phase Analysis
+## Three-Phase Analysis
 
 ### Phase 1 — Data Understanding & Preparation
 - Systematic variable identification across 4 categories: outcomes, school choice, family engagement, demographics
@@ -52,7 +60,7 @@ student academic success, and how do these factors interact?**
 
 ---
 
-## 📈 Key Engineered Features
+## Key Engineered Features
 | Feature | Description | Type |
 |---|---|---|
 | `success_binary` | 1 if grades A/B, 0 if C/D | Outcome |
@@ -65,7 +73,7 @@ student academic success, and how do these factors interact?**
 
 ---
 
-## 🔑 Key Findings
+##  Key Findings
 - School choice shows statistically significant positive association with academic success
 - Family engagement — particularly homework support and school activities — meaningfully predicts student outcomes
 - Low-income states experience more severe outcomes, suggesting socioeconomic factors moderate engagement effectiveness
@@ -74,7 +82,7 @@ student academic success, and how do these factors interact?**
 
 ---
 
-## 🛠️ Tools & Packages
+## Tools & Packages
 | Category | Packages |
 |---|---|
 | Data Wrangling | `tidyverse`, `tidymodels`, `readr`, `lubridate`, `conflicted` |
@@ -85,7 +93,7 @@ student academic success, and how do these factors interact?**
 
 ---
 
-## 🚀 Live Reports
+## Live Reports
 👉 [Phase 1 — Data Understanding & Preparation](https://kdeepr.github.io/Predicting-k-12-Success-using-generalized-linear-models/Phase1_Data_Preparation.html)
 
 👉 [Phase 2 — Exploratory Data Analysis](https://kdeepr.github.io/Predicting-k-12-Success-using-generalized-linear-models/Phase2_Exploratory_Analysis.html)
@@ -96,21 +104,24 @@ student academic success, and how do these factors interact?**
 
 ## 📁 Repository Structure
 
-* Phase1_Data_Preparation.Rmd - Data cleaning & feature engineering
-* Phase2_Exploratory_Analysis.Rmd - EDA & variable selection
-* Phase3_GLM_Development.Rmd        # Model building & evaluation
-* pfi-data-2016.csv                 # Raw 2016 PFI Survey data
-* pfi-data-2019.csv                 # Raw 2019 PFI Survey data
-*  pfi_phase1_clean.csv              # Cleaned dataset from Phase 1
-*  pfi_phase2_model_ready.csv        # Model-ready dataset from Phase 2
-* .github/workflows/render.yml      # Auto-render GitHub Actions workflow
-* README.md
-
-
+```
+Predicting-k-12-Success-using-generalized-linear-models/
+├── Phase1_Data_Preparation.Rmd         # Data cleaning & feature engineering
+├── Phase2_Exploratory_Analysis.Rmd     # EDA & variable selection
+├── Phase3_GLM_Development.Rmd          # Model building & evaluation
+├── pfi-data-2016.csv                   # Raw 2016 PFI Survey data
+├── pfi-data-2019.csv                   # Raw 2019 PFI Survey data
+├── pfi_phase1_clean.csv                # Cleaned dataset from Phase 1
+├── pfi_phase2_model_ready.csv          # Model-ready dataset from Phase 2
+├── .github/
+│   └── workflows/
+│       └── render.yml                  # Auto-render GitHub Actions workflow
+└── README.md
+```
 
 ---
 
-## ▶️ How to Run Locally
+## How to Run Locally
 ```r
 install.packages(c(
   "knitr", "kableExtra", "tidyverse", "tidymodels",
