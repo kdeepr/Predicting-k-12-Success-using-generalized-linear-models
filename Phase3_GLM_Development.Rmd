@@ -1234,6 +1234,7 @@ cat("\n✓ Confusion matrix plotted\n\n")
 
 # Detailed confusion matrix
 cm_lda_detailed <- as.data.frame(cm_lda$table) %>%
+  rename(freq = Freq) %>%
   group_by(Truth) %>%
   mutate(
     Total = sum(freq),
