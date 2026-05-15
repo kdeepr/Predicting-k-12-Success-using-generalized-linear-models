@@ -47,7 +47,16 @@ suppressPackageStartupMessages({
   library(probably)
   library(discrim)
 })
+```
 
+```{r}
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+```
+
+
+```{r}
 # Set theme and colors
 theme_set(theme_minimal(base_size = 10) + 
           theme(plot.title = element_text(face = "bold", size = 12),
