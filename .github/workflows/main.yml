@@ -32,7 +32,7 @@ jobs:
             "viridis", "scales", "readr", "nnet", "MASS",
             "pscl", "car", "conflicted", "rmarkdown",
             "GGally", "ggmosaic", "patchwork", "broom",
-            "glmnet", "poissonreg", "vip", "probably", "discrim"
+            "glmnet", "poissonreg", "vip", "probably", "discrim", "ggmosaic"
           ))
         shell: Rscript {0}
 
