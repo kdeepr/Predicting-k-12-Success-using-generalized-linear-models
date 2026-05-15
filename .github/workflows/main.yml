@@ -1,0 +1,58 @@
+name: Render R Markdown Reports
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.3.1'
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev libfontconfig1-dev libharfbuzz-dev libfribidi-dev libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev
+
+      - name: Install R packages
+        run: |
+          install.packages(c(
+            "knitr", "kableExtra", "tidyverse", "tidymodels",
+            "readxl", "ggplot2", "corrplot", "gridExtra",
+            "viridis", "scales", "readr", "nnet", "MASS",
+            "pscl", "car", "conflicted", "rmarkdown",
+            "GGally", "patchwork", "broom",
+            "glmnet", "poissonreg", "vip", "probably", "discrim",
+            "remotes"
+          ))
+        shell: Rscript {0}
+
+      - name: Install ggmosaic from GitHub
+        run: |
+          remotes::install_github("haleyjeppson/ggmosaic")
+        shell: Rscript {0}
+
+      - name: Render Phase 1
+        run: Rscript -e "rmarkdown::render('Phase1_Data_Preparation.Rmd', output_format='html_document')"
+
+      - name: Render Phase 2
+        run: Rscript -e "rmarkdown::render('Phase2_Exploratory_Analysis.Rmd', output_format='html_document')"
+
+      - name: Render Phase 3
+        run: Rscript -e "rmarkdown::render('Phase3_GLM_Development.Rmd', output_format='html_document')"
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
