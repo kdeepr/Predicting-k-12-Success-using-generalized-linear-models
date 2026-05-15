@@ -96,15 +96,15 @@ student academic success, and how do these factors interact?**
 
 ## 📁 Repository Structure
 
-├── Phase1_Data_Preparation.Rmd       # Data cleaning & feature engineering
-├── Phase2_Exploratory_Analysis.Rmd   # EDA & variable selection
-├── Phase3_GLM_Development.Rmd        # Model building & evaluation
-├── pfi-data-2016.csv                 # Raw 2016 PFI Survey data
-├── pfi-data-2019.csv                 # Raw 2019 PFI Survey data
-├── pfi_phase1_clean.csv              # Cleaned dataset from Phase 1
-├── pfi_phase2_model_ready.csv        # Model-ready dataset from Phase 2
-├── .github/workflows/render.yml      # Auto-render GitHub Actions workflow
-└── README.md
+* Phase1_Data_Preparation.Rmd - Data cleaning & feature engineering
+* Phase2_Exploratory_Analysis.Rmd - EDA & variable selection
+* Phase3_GLM_Development.Rmd        # Model building & evaluation
+* pfi-data-2016.csv                 # Raw 2016 PFI Survey data
+* pfi-data-2019.csv                 # Raw 2019 PFI Survey data
+*  pfi_phase1_clean.csv              # Cleaned dataset from Phase 1
+*  pfi_phase2_model_ready.csv        # Model-ready dataset from Phase 2
+* .github/workflows/render.yml      # Auto-render GitHub Actions workflow
+* README.md
 
 
 
