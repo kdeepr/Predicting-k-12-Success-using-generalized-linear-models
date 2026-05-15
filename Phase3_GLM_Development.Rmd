@@ -765,10 +765,11 @@ cat("\n✓ Confusion matrix plotted\n\n")
 
 # Show detailed confusion matrix with percentages
 cm_summary <- as.data.frame(cm_best$table) %>%
+  rename(n = Freq) %>%
   group_by(Truth) %>%
   mutate(
-    Total = sum(.data$n),
-    Percentage = round(.data$n / Total * 100, 1)
+    Total = sum(n),
+    Percentage = round(n / Total * 100, 1)
   ) %>%
   ungroup()
 
