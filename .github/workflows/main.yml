@@ -31,9 +31,15 @@ jobs:
             "readxl", "ggplot2", "corrplot", "gridExtra",
             "viridis", "scales", "readr", "nnet", "MASS",
             "pscl", "car", "conflicted", "rmarkdown",
-            "GGally", "ggmosaic", "patchwork", "broom",
-            "glmnet", "poissonreg", "vip", "probably", "discrim"
+            "GGally", "patchwork", "broom",
+            "glmnet", "poissonreg", "vip", "probably", "discrim",
+            "remotes"
           ))
+        shell: Rscript {0}
+
+      - name: Install ggmosaic from GitHub
+        run: |
+          remotes::install_github("haleyjeppson/ggmosaic")
         shell: Rscript {0}
 
       - name: Render Phase 1
