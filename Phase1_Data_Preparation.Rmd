@@ -1,0 +1,793 @@
+---
+title: "Impact of School Choice and Family Engagement on K-12 Educational Success"
+subtitle: 'Phase 1: Data Understanding & Preparation'
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    df_print: kable
+  word_document:
+    toc: true
+    toc_depth: '3'
+---
+
+\newpage
+
+# Executive Summary
+This analysis investigates the impact of school choice and family engagement on K-12 educational success using data from the Parent and Family Involvement (PFI) in Education Survey. Our objective is to develop and evaluate generalized linear models that quantify these relationships, providing actionable recommendations for GVSU's K-12 Connect program. We employ multiple modeling techniques including logistic regression, multinomial regression, discriminant analysis, and Poisson regression to comprehensively understand these educational dynamics.
+
+# Setup and Configuration
+## Load all required libraries
+```{r}
+library(knitr)
+library(kableExtra)
+
+library(tidyverse)   # includes dplyr first
+library(tidymodels)
+library(readxl)
+library(ggplot2)
+library(corrplot)
+library(gridExtra)
+library(viridis)
+library(scales)
+library(readr)
+
+library(nnet)
+library(MASS)
+library(pscl)
+library(car)
+
+# Ensure dplyr wins conflicts
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("mutate", "dplyr")
+conflict_prefer("lag", "dplyr")
+
+# Global options for consistent output
+options(scipen = 999)  
+options(digits = 4)   
+
+# Consistent theme for all plots
+theme_set(theme_minimal() + 
+          theme(plot.title = element_text(face = "bold", size = 14),
+                plot.subtitle = element_text(size = 12),
+                axis.title = element_text(face = "bold"),
+                legend.position = "bottom",
+                panel.grid.minor = element_blank()))
+
+# Color palette for consistent visualizations
+project_colors <- c("#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#6A994E")       
+```
+
+# Data Understanding and Preparation
+```{r}
+data_overview <- data.frame(
+  Metric = c("Survey Year", "Total Students", "Variables Analyzed", "Primary Focus Areas"),
+  Value = c("2019", "15,500", "71", "School Choice, Family Engagement, Academic Success")
+)
+
+kable(data_overview,
+      caption = "Table 1: Dataset Overview",
+      col.names = c("", ""),
+      align = c("l", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center") %>%
+  column_spec(1, bold = TRUE, width = "5cm") %>%
+  column_spec(2, width = "6cm")
+```
+
+
+## Project Context and Objectives
+GVSU's K-12 Connect has commissioned this analysis to understand how school choice and family engagement in educational activities impact student academic success. The key research objectives are:
+
+1. **Quantify the impact of school choice** on student academic achievement
+2. **Measure the effect of family engagement** in both homework support and school activities
+3. **Identify optimal engagement patterns** that maximize student success
+4. **Provide evidence-based recommendations** for educational interventions
+
+This analysis utilizes data from the U.S. Department of Education's Parent and Family Involvement in Education Survey, which provides comprehensive information about educational experiences, family involvement, and student outcomes.
+
+## Data Loading and Initial Assessment
+```{r}
+pfi_2016 <- read_csv("pfi-data-2016.csv", show_col_types = FALSE)
+pfi_2019 <- read_csv("pfi-data-2019.csv", show_col_types = FALSE)
+```
+
+# Handle any initial data type issues
+# CSV files sometimes read numeric codes as characters
+```{r}
+pfi_2016 <- pfi_2016 %>%
+  mutate(across(where(is.character), ~na_if(., ""))) %>%
+  mutate(across(where(is.character), ~na_if(., "NA")))
+
+pfi_2019 <- pfi_2019 %>%
+  mutate(across(where(is.character), ~na_if(., ""))) %>%
+  mutate(across(where(is.character), ~na_if(., "NA")))
+
+data_summary <- data.frame(
+  Dataset = c("2016 PFI Survey", "2019 PFI Survey"),
+  Observations = c(nrow(pfi_2016), nrow(pfi_2019)),
+  Variables = c(ncol(pfi_2016), ncol(pfi_2019)),
+  Size_MB = c(object.size(pfi_2016)/1048576, object.size(pfi_2019)/1048576)
+)
+
+kable(data_summary, 
+      caption = "Parent and Family Involvement Survey Data Overview",
+      col.names = c("Dataset", "Observations", "Variables", "Size (MB)"),
+      align = c("l", "r", "r", "r"),
+      digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE,
+                position = "center")
+
+# Compare variable availability across years
+vars_2016 <- names(pfi_2016)
+vars_2019 <- names(pfi_2019)
+common_vars <- intersect(vars_2016, vars_2019)
+unique_2016 <- setdiff(vars_2016, vars_2019)
+unique_2019 <- setdiff(vars_2019, vars_2016)
+
+cat("\n=== Variable Comparison Across Years ===\n")
+cat("Common variables:", length(common_vars), "\n")
+cat("Unique to 2016:", length(unique_2016), "\n")
+cat("Unique to 2019:", length(unique_2019), "\n")
+
+# Display first few variable names to understand naming convention
+cat("\nFirst 10 variables in 2019 dataset:\n")
+head(names(pfi_2019), 10)
+```
+## Data Selection Strategy
+
+Based on our initial assessment, we have made the following strategic decisions:
+
+### Primary Dataset Selection
+
+We selected the **2019 PFI dataset as our primary analysis dataset** for the following reasons:
+
+1. **Recency**: Provides the most current snapshot of educational experiences
+2. **Completeness**: Contains all core variables needed for our analysis
+3. **Policy Relevance**: Reflects current educational landscape and choice options
+4. **Pre-pandemic Data**: Captures typical educational patterns without COVID-19 disruptions
+
+The 2016 dataset will be retained for temporal validation and sensitivity analysis to ensure our findings are stable across time.
+
+```{r}
+# Set primary dataset for analysis
+pfi_data <- pfi_2019
+cat("\nPrimary dataset selected: 2019 PFI Survey\n")
+cat("Working with", nrow(pfi_data), "observations and", ncol(pfi_data), "variables\n")
+
+# Quick data quality check
+cat("\n=== Initial Data Quality Check ===\n")
+cat("Numeric variables:", sum(sapply(pfi_data, is.numeric)), "\n")
+cat("Character variables:", sum(sapply(pfi_data, is.character)), "\n")
+cat("Logical variables:", sum(sapply(pfi_data, is.logical)), "\n")
+```
+
+## Variable Identification and Classification
+
+Our analysis requires careful identification of variables across four critical categories: outcome measures, school choice indicators, family engagement metrics, and demographic controls. We systematically reviewed the PFI codebook and identified relevant variables for each category.
+```{r}
+## Systematic Variable Identification with Actual Variable Names
+
+# Outcome variables
+outcome_vars <- c(
+  "SEGRADES",   # Child's grades across all subjects (PRIMARY OUTCOME)
+  "SEGRADEQ",   # Expected educational attainment
+  "SEENJOY",    # School enjoyment
+  "SEABSNT"     # School absences (alternative outcome)
+)
+
+# School choice variables - REQUIRED FOCUS AREA
+school_choice_vars <- c(
+  "SCCHOICE",   # Had choice of schools (KEY VARIABLE)
+  "SPUBCHOIX",  # Public school choice
+  "SCONSIDR",   # Schools considered
+  "EDCPUB",     # Type of school (public/private indicator)
+  "SCHLHRSWK",  # School hours per week
+  "MOSTIMPT"    # Most important reason for school choice
+)
+
+# Family engagement - Homework (REQUIRED FOCUS)
+homework_engagement_vars <- c(
+  "FHHOME",     # Homework activities at home
+  "FHWKHRS",    # Hours of homework per week
+  "FHAMOUNT",   # Amount of homework
+  "FHCAMT",     # Homework amount appropriate
+  "FHPLACE",    # Has place for homework
+  "FHCHECKX",   # Check homework completion
+  "FHHELP"      # Help with homework
+)
+
+# Family engagement - School activities (REQUIRED FOCUS)
+school_activity_vars <- c(
+  "FSSPORTX",   # School sports participation
+  "FSVOL",      # Volunteered at school
+  "FSMTNG",     # Attended general school meeting
+  "FSPTMTNG",   # Attended parent-teacher conference
+  "FSATCNFN",   # Attended school conference
+  "FSFUNDRS",   # Participated in fundraising
+  "FSCOMMTE",   # Served on school committee
+  "FSCOUNSLR",  # Met with school counselor
+  "FSFREQ"      # Frequency of school involvement
+)
+
+# Parent-school communication variables
+communication_vars <- c(
+  "FSNOTESX",   # School notes/emails
+  "FSMEMO",     # School memos
+  "FCSCHOOL",   # Contact with school
+  "FCTEACHR",   # Contact with teacher
+  "FCSTDS",     # Discuss standards
+  "FCORDER",    # Discuss order/discipline
+  "FCSUPPRT"    # School support
+)
+
+# Home educational activities
+home_activity_vars <- c(
+  "FOSTORY2X",  # Tell stories to child
+  "FOCRAFTS",   # Arts and crafts
+  "FOGAMES",    # Play games
+  "FOBUILDX",   # Building activities
+  "FOSPORT",    # Sports activities
+  "FORESPON",   # Discuss responsibilities
+  "FOHISTX",    # Discuss history/heritage
+  "FODINNERX",  # Family dinners
+  "FOLIBRAYX",  # Visit library
+  "FOBOOKSTX"   # Visit bookstore
+)
+
+# Demographic and control variables
+demographic_vars <- c(
+  "CDOBMM",     # Child's birth month
+  "CDOBYY",     # Child's birth year
+  "CSEX",       # Child's sex
+  "ALLGRADEX",  # Current grade level
+  "CSPEAKX",    # Language spoken
+  "HHTOTALXX",  # Household total
+  "RELATION",   # Relationship to child
+  "P1REL",      # Parent 1 relationship
+  "P1SEX",      # Parent 1 sex
+  "P1MRSTA",    # Parent 1 marital status
+  "P1EMPL",     # Parent 1 employment
+  "P1HRSWK",    # Parent 1 hours worked
+  "P1AGE",      # Parent 1 age
+  "P2GUARD",    # Parent 2 guardian status
+  "TTLHHINC",   # Total household income
+  "OWNRNTHB",   # Own or rent home
+  "CHLDNT",     # Number of children
+  "DSBLTY",     # Disability status
+  "HHPARN19X",  # Number of parents in household
+  "NUMSIBSX",   # Number of siblings
+  "PARGRADEX",  # Parent's highest education
+  "RACEETH",    # Race/ethnicity
+  "CENREG",     # Census region
+  "ZIPLOCL"     # ZIP code locale
+)
+
+# Additional variables for analysis
+other_important_vars <- c(
+  "HDHEALTH",   # Child's health
+  "SEFUTUREX",  # Future expectations
+  "INTACC",     # Internet access
+  "EINTNET"     # Internet use for education
+)
+
+# Compile all selected variables
+all_selected_vars <- unique(c(outcome_vars, school_choice_vars, homework_engagement_vars,
+                              school_activity_vars, communication_vars, home_activity_vars, 
+                              demographic_vars, other_important_vars))
+
+cat("\n=== Variable Selection Summary ===\n")
+cat("Outcome variables identified:", length(outcome_vars), "\n")
+cat("School choice variables:", length(school_choice_vars), "\n")
+cat("Homework engagement variables:", length(homework_engagement_vars), "\n")
+cat("School activity variables:", length(school_activity_vars), "\n")
+cat("Communication variables:", length(communication_vars), "\n")
+cat("Home activity variables:", length(home_activity_vars), "\n")
+cat("Demographic/control variables:", length(demographic_vars), "\n")
+cat("Other important variables:", length(other_important_vars), "\n")
+cat("Total unique variables selected:", length(all_selected_vars), "\n")
+```
+
+```{r}
+## Verify Variable Availability and Create Working Dataset
+
+# Check which selected variables are actually in the dataset
+available_vars <- intersect(all_selected_vars, names(pfi_data))
+missing_vars <- setdiff(all_selected_vars, names(pfi_data))
+
+cat("\n=== Variable Availability Check ===\n")
+cat("Variables found in dataset:", length(available_vars), "\n")
+cat("Variables not found:", length(missing_vars), "\n")
+
+if(length(missing_vars) > 0) {
+  cat("\nVariables not found in dataset:\n")
+  print(missing_vars)
+}
+
+# Create initial working dataset with available variables
+pfi_working <- pfi_data %>%
+  dplyr::select(dplyr::all_of(available_vars))
+
+cat("\nWorking dataset created with", ncol(pfi_working), "variables\n")
+
+# Display structure summary
+cat("\n=== Working Dataset Structure ===\n")
+cat("Observations:", nrow(pfi_working), "\n")
+cat("Variables:", ncol(pfi_working), "\n")
+cat("Complete cases:", sum(complete.cases(pfi_working)), "\n")
+cat("Percentage complete:", round(sum(complete.cases(pfi_working))/nrow(pfi_working)*100, 2), "%\n")
+```
+
+```{r}
+## Data Type Verification and Key Variable Analysis
+
+# Function to examine variable
+examine_variable <- function(data, var_name, var_description = "") {
+  if(var_name %in% names(data)) {
+    cat(paste0("\n", var_name, " - ", var_description, "\n"))
+    cat(paste0(rep("-", 50), collapse=""), "\n")
+    
+    # Get unique values
+    unique_vals <- sort(unique(data[[var_name]]))
+    n_unique <- length(unique_vals)
+    
+    if(n_unique <= 20) {
+      cat("Unique values:", paste(unique_vals, collapse = ", "), "\n")
+      
+      # Show frequency table for categorical-like variables
+      freq_table <- table(data[[var_name]], useNA = "ifany")
+      prop_table <- prop.table(freq_table) * 100
+      
+      cat("\nFrequency distribution:\n")
+      for(i in 1:length(freq_table)) {
+        cat(sprintf("  %s: %d (%.1f%%)\n", 
+                   names(freq_table)[i], 
+                   freq_table[i], 
+                   prop_table[i]))
+      }
+    } else {
+      cat("Continuous variable with", n_unique, "unique values\n")
+      cat("\nSummary statistics:\n")
+      print(summary(data[[var_name]]))
+    }
+    
+    # Check for missing data codes
+    potential_missing <- sum(data[[var_name]] %in% c(-1, -9, 99, 999), na.rm = TRUE)
+    if(potential_missing > 0) {
+      cat("\nWARNING: Found", potential_missing, "potential missing value codes\n")
+    }
+  } else {
+    cat(paste0("\n", var_name, " - NOT FOUND in dataset\n"))
+  }
+}
+
+# Examine key outcome variables
+cat("\n========== KEY OUTCOME VARIABLES ==========\n")
+examine_variable(pfi_working, "SEGRADES", "Student grades (Primary Outcome)")
+examine_variable(pfi_working, "SEGRADEQ", "Expected educational attainment")
+examine_variable(pfi_working, "SEENJOY", "School enjoyment")
+
+# Examine key school choice variables
+cat("\n\n========== KEY SCHOOL CHOICE VARIABLES ==========\n")
+examine_variable(pfi_working, "SCCHOICE", "Had choice of schools")
+examine_variable(pfi_working, "SPUBCHOIX", "Public school choice")
+examine_variable(pfi_working, "EDCPUB", "School type")
+
+# Examine key engagement variables
+cat("\n\n========== KEY ENGAGEMENT VARIABLES ==========\n")
+examine_variable(pfi_working, "FHHELP", "Homework help")
+examine_variable(pfi_working, "FSVOL", "Volunteer at school")
+examine_variable(pfi_working, "FSPTMTNG", "Parent-teacher conference")
+```
+
+```{r}
+## Missing Data Analysis
+library(tidyverse)
+
+# Calculate missing data for all variables
+missing_summary <- pfi_working %>%
+  summarise_all(~sum(is.na(.) | . %in% c(-1, -9, 99, 999))) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Missing_Count") %>%
+  mutate(
+    Missing_Percent = round(Missing_Count / nrow(pfi_working) * 100, 2),
+    Category = case_when(
+      Variable %in% outcome_vars ~ "Outcome",
+      Variable %in% school_choice_vars ~ "School Choice",
+      Variable %in% homework_engagement_vars ~ "Homework",
+      Variable %in% school_activity_vars ~ "School Activities",
+      Variable %in% communication_vars ~ "Communication",
+      Variable %in% home_activity_vars ~ "Home Activities",
+      Variable %in% demographic_vars ~ "Demographic",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  arrange(Category, Missing_Percent)
+
+# Summary by category
+missing_by_category <- missing_summary %>%
+  group_by(Category) %>%
+  summarise(
+    Variables = n(),
+    Avg_Missing = round(mean(Missing_Percent), 2),
+    Min_Missing = round(min(Missing_Percent), 2),
+    Max_Missing = round(max(Missing_Percent), 2)
+  ) %>%
+  arrange(Avg_Missing)
+
+kable(missing_by_category,
+      caption = "Missing Data Summary by Variable Category",
+      col.names = c("Category", "# Variables", "Avg % Missing", 
+                    "Min % Missing", "Max % Missing")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+# Visualize missing data patterns for key variables
+key_vars_missing <- missing_summary %>%
+  filter(Variable %in% c(outcome_vars, 
+                         c("SCCHOICE", "SPUBCHOIX", "FHHELP", 
+                           "FSVOL", "FSPTMTNG", "TTLHHINC"))) %>%
+  ggplot(aes(x = reorder(Variable, Missing_Percent), 
+             y = Missing_Percent, 
+             fill = Category)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = project_colors) +
+  labs(
+    title = "Missing Data in Key Variables",
+    subtitle = "Critical variables for analysis",
+    x = "Variable",
+    y = "Percentage Missing (%)",
+    fill = "Category"
+  ) +
+  geom_hline(yintercept = 5, linetype = "dashed", color = "red", alpha = 0.5) +
+  theme(axis.text.y = element_text(size = 10))
+
+print(key_vars_missing)
+```
+
+## Feature Engineering Planning
+
+Based on our variable exploration, we will create several engineered features to better capture the relationships between school choice, family engagement, and academic success.
+```{r}
+## Feature Engineering Implementation
+
+# Create engineered features
+pfi_engineered <- pfi_working %>%
+  mutate(
+    # Binary academic success
+    success_binary = case_when(
+      SEGRADES %in% c(1, 2) ~ 1,
+      SEGRADES %in% c(3, 4) ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # School activity engagement count
+    engagement_count = rowSums(
+      dplyr::select(., FSSPORTX, FSVOL, FSMTNG, FSPTMTNG, FSATCNFN,
+                    FSFUNDRS, FSCOMMTE, FSCOUNSLR) == 1,
+      na.rm = TRUE
+    ),
+
+    # Homework intensity index
+    homework_intensity = rowMeans(
+      dplyr::select(., FHHOME, FHCHECKX, FHHELP),
+      na.rm = TRUE
+    ),
+
+    # School involvement index
+    school_involvement = rowMeans(
+      dplyr::select(., FSVOL, FSMTNG, FSPTMTNG, FSCOMMTE),
+      na.rm = TRUE
+    ),
+
+    # Communication frequency index
+    communication_index = rowMeans(
+      dplyr::select(., FCSCHOOL, FCTEACHR, FSNOTESX),
+      na.rm = TRUE
+    ),
+
+    # Home enrichment activities
+    enrichment_count = rowSums(
+      dplyr::select(., FOSTORY2X, FOCRAFTS, FOGAMES, FOBUILDX,
+                    FOSPORT, FOLIBRAYX, FOBOOKSTX) == 1,
+      na.rm = TRUE
+    ),
+
+    # School choice indicator
+    has_choice = ifelse(SCCHOICE == 1, 1, 0),
+
+    # Child age
+    child_age = 2019 - as.numeric(CDOBYY)
+  )
+
+
+# Summary of engineered features
+engineered_summary <- data.frame(
+  Feature = c("success_binary", "engagement_count", "homework_intensity",
+              "school_involvement", "communication_index", "enrichment_count"),
+  Description = c(
+    "Binary outcome: 1 if grades A/B, 0 if C/D",
+    "Count of school activities participated in",
+    "Average homework engagement (0-1 scale)",
+    "Average school involvement (0-1 scale)",
+    "Average parent-school communication (0-1 scale)",
+    "Count of home enrichment activities"
+  ),
+  Mean = c(
+    mean(pfi_engineered$success_binary, na.rm = TRUE),
+    mean(pfi_engineered$engagement_count, na.rm = TRUE),
+    mean(pfi_engineered$homework_intensity, na.rm = TRUE),
+    mean(pfi_engineered$school_involvement, na.rm = TRUE),
+    mean(pfi_engineered$communication_index, na.rm = TRUE),
+    mean(pfi_engineered$enrichment_count, na.rm = TRUE)
+  ),
+  SD = c(
+    sd(pfi_engineered$success_binary, na.rm = TRUE),
+    sd(pfi_engineered$engagement_count, na.rm = TRUE),
+    sd(pfi_engineered$homework_intensity, na.rm = TRUE),
+    sd(pfi_engineered$school_involvement, na.rm = TRUE),
+    sd(pfi_engineered$communication_index, na.rm = TRUE),
+    sd(pfi_engineered$enrichment_count, na.rm = TRUE)
+  )
+)
+
+kable(engineered_summary,
+      caption = "Summary of Engineered Features",
+      col.names = c("Feature", "Description", "Mean", "SD"),
+      digits = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+# Visualize distribution of engagement count (for Poisson regression)
+engagement_dist <- ggplot(pfi_engineered, aes(x = engagement_count)) +
+  geom_histogram(binwidth = 1, fill = project_colors[1], color = "white") +
+  labs(
+    title = "Distribution of School Activity Engagement",
+    subtitle = "Count variable for Poisson regression",
+    x = "Number of School Activities",
+    y = "Frequency"
+  ) +
+  scale_x_continuous(breaks = 0:8) +
+  theme_minimal()
+
+print(engagement_dist)
+
+# Check for overdispersion in count data
+cat("\n=== Poisson Regression Preparation ===\n")
+cat("Engagement count statistics:\n")
+cat("Mean:", mean(pfi_engineered$engagement_count, na.rm = TRUE), "\n")
+cat("Variance:", var(pfi_engineered$engagement_count, na.rm = TRUE), "\n")
+cat("Variance/Mean ratio:", 
+    var(pfi_engineered$engagement_count, na.rm = TRUE) / 
+    mean(pfi_engineered$engagement_count, na.rm = TRUE), "\n")
+if(var(pfi_engineered$engagement_count, na.rm = TRUE) > 
+   mean(pfi_engineered$engagement_count, na.rm = TRUE)) {
+  cat("Note: Variance > Mean suggests overdispersion - consider negative binomial\n")
+}
+```
+
+## Data Quality Assessment Summary
+
+We have completed a comprehensive assessment of data quality, identifying patterns that will inform our modeling strategy.
+
+```{r}
+## Create Comprehensive Data Quality Report
+
+# Overall data quality metrics
+quality_report <- list(
+  total_obs = nrow(pfi_data),
+  working_vars = ncol(pfi_working),
+  engineered_vars = ncol(pfi_engineered) - ncol(pfi_working),
+  complete_cases = sum(complete.cases(pfi_engineered)),
+  complete_pct = round(sum(complete.cases(pfi_engineered))/nrow(pfi_engineered)*100, 2),
+  
+  # Outcome variable quality
+  outcome_missing = round(sum(is.na(pfi_engineered$SEGRADES))/nrow(pfi_engineered)*100, 2),
+  binary_outcome_dist = round(prop.table(table(pfi_engineered$success_binary))*100, 2),
+  
+  # Key predictor quality
+  choice_missing = round(sum(is.na(pfi_engineered$SCCHOICE))/nrow(pfi_engineered)*100, 2),
+  homework_missing = round(sum(is.na(pfi_engineered$FHHELP))/nrow(pfi_engineered)*100, 2),
+  
+  # Engagement measures
+  mean_engagement = round(mean(pfi_engineered$engagement_count, na.rm = TRUE), 2),
+  max_engagement = max(pfi_engineered$engagement_count, na.rm = TRUE)
+)
+
+# Create formatted quality report table
+quality_df <- data.frame(
+  Metric = c("Total Observations", 
+             "Working Variables",
+             "Engineered Features",
+             "Complete Cases",
+             "Complete Cases %",
+             "Outcome Missing %",
+             "Success Rate (Binary)",
+             "School Choice Missing %",
+             "Homework Help Missing %",
+             "Mean Engagement Count",
+             "Max Engagement Count"),
+  Value = c(quality_report$total_obs,
+           quality_report$working_vars,
+           quality_report$engineered_vars,
+           quality_report$complete_cases,
+           paste0(quality_report$complete_pct, "%"),
+           paste0(quality_report$outcome_missing, "%"),
+           paste0(quality_report$binary_outcome_dist[2], "%"),
+           paste0(quality_report$choice_missing, "%"),
+           paste0(quality_report$homework_missing, "%"),
+           quality_report$mean_engagement,
+           quality_report$max_engagement)
+)
+
+kable(quality_df,
+      caption = "Data Quality Assessment Summary",
+      col.names = c("Quality Metric", "Value"),
+      align = c("l", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+```
+
+## Key Decisions and Preparation for Modeling
+
+Based on our comprehensive data understanding phase, we have made the following strategic decisions:
+```{r}
+## Document Final Decisions for Phase 2
+
+decisions <- list(
+  "Primary Outcome" = "SEGRADES serves as our primary outcome, with binary version (A/B vs C/D) 
+                       for logistic regression and original 4-category for multinomial regression",
+  
+  "Count Outcome" = "engagement_count (0-8 scale) created from school activity variables 
+                     for Poisson regression demonstration",
+  
+  "School Choice Variables" = "SCCHOICE (had choice) and SPUBCHOIX (public choice) as primary indicators, 
+                              supplemented by EDCPUB for school type analysis",
+  
+  "Homework Engagement" = "FHHELP (help frequency), FHCHECKX (checking), and composite homework_intensity 
+                          index capture homework support patterns",
+  
+  "School Activities" = "Individual activities (FSVOL, FSPTMTNG, etc.) plus school_involvement 
+                        index measure school engagement",
+  
+  "Control Strategy" = "TTLHHINC (income), PARGRADEX (parent education), CSEX, ALLGRADEX, 
+                       and RACEETH as key demographic controls",
+  
+  "Missing Data" = "Variables with <10% missing retained; missing value codes (-1, -9, 99) 
+                    converted to NA; imputation planned for modeling phase",
+  
+  "Interaction Terms" = "Plan to explore SCCHOICE × engagement_count and TTLHHINC × homework_intensity 
+                        interactions in Phase 2"
+)
+
+# Create formatted decision table
+decision_df <- data.frame(
+  Decision_Area = names(decisions),
+  Strategy = unlist(decisions),
+  stringsAsFactors = FALSE
+)
+
+kable(decision_df,
+      caption = "Strategic Decisions for Modeling Phase",
+      col.names = c("Decision Area", "Strategy")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2, width = "12cm")
+```
+
+```{r}
+## Save Clean Dataset for Next Phase
+
+# Final data preparation
+pfi_clean <- pfi_engineered %>%
+  # Replace missing value codes with NA
+  mutate(across(everything(), ~ifelse(. %in% c(-1, -9, 99, 999), NA, .)))
+
+# Remove variables with >30% missing
+high_missing <- missing_summary %>%
+  filter(Missing_Percent > 30) %>%
+  pull(Variable)
+
+if(length(high_missing) > 0) {
+  cat("\nRemoving", length(high_missing), "variables with >30% missing:\n")
+  print(high_missing)
+  pfi_clean <- pfi_clean %>%
+  dplyr::select(-dplyr::all_of(high_missing))
+}
+
+# Save the dataset
+write_csv(pfi_clean, "pfi_phase1_clean.csv")
+saveRDS(pfi_clean, "pfi_phase1_clean.rds")
+
+# Create final summary
+final_summary <- data.frame(
+  Stage = c("Original 2019 Data", 
+            "Variable Selection", 
+            "After Engineering", 
+            "Final Clean Dataset"),
+  Observations = c(nrow(pfi_data), 
+                  nrow(pfi_working), 
+                  nrow(pfi_engineered), 
+                  nrow(pfi_clean)),
+  Variables = c(ncol(pfi_data), 
+               ncol(pfi_working), 
+               ncol(pfi_engineered), 
+               ncol(pfi_clean))
+)
+
+kable(final_summary,
+      caption = "Data Transformation Summary",
+      align = c("l", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE,
+                position = "center")
+
+cat("\n✓ Phase 1 Complete: Clean dataset saved as 'pfi_phase1_clean.csv' and '.rds'\n")
+```
+
+
+```{r}
+engineered_summary_complete <- data.frame(
+  Feature = c("success_binary", "engagement_count", "homework_intensity",
+              "school_involvement", "communication_index", "enrichment_count",
+              "has_choice", "child_age"),
+  Description = c(
+    "Binary outcome: 1 if grades A/B, 0 if C/D",
+    "Count of school activities participated in (0-8)",
+    "Average homework engagement frequency",
+    "Average school involvement frequency",
+    "Average parent-school communication frequency",
+    "Count of home enrichment activities (0-7)",
+    "Binary indicator: 1 if had school choice, 0 otherwise",
+    "Child's age calculated from birth year"
+  ),
+  Type = c("Outcome", "Composite Index", "Composite Index", 
+           "Composite Index", "Composite Index", "Composite Index",
+           "Simple Recode", "Simple Calculation"),
+  Mean = c(
+    round(mean(pfi_engineered$success_binary, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$engagement_count, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$homework_intensity, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$school_involvement, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$communication_index, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$enrichment_count, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$has_choice, na.rm = TRUE), 2),
+    round(mean(pfi_engineered$child_age, na.rm = TRUE), 2)
+  ),
+  SD = c(
+    round(sd(pfi_engineered$success_binary, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$engagement_count, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$homework_intensity, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$school_involvement, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$communication_index, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$enrichment_count, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$has_choice, na.rm = TRUE), 2),
+    round(sd(pfi_engineered$child_age, na.rm = TRUE), 2)
+  )
+)
+
+kable(engineered_summary_complete,
+      caption = "Table: All Engineered Features",
+      col.names = c("Feature", "Description", "Type", "Mean", "SD"),
+      digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE) %>%
+  row_spec(1:6, background = "#f0f8ff") 
+```
+
