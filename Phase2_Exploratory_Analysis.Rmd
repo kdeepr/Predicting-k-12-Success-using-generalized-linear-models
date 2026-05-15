@@ -43,7 +43,6 @@ suppressPackageStartupMessages({
   library(knitr)
   library(kableExtra)
   library(GGally)
-  library(ggmosaic)
   library(patchwork)
   library(broom)
   library(car)
